@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use sysinfo::System;
 
 use crate::models::embeddings::{install_required_fastembed_assets, install_splade_asset};
+use crate::models::llm::ensure_local_extraction_model;
 
 const DEFAULT_EMBEDDING_MODEL: &str = "fastembed:all-MiniLM-L6-v2";
 const DEFAULT_EXTRACTION_MODEL: &str = "openai:gpt-4o";
@@ -313,6 +314,17 @@ fn configure_embedded_models(config: &mut Config, tty_available: bool) -> Result
         .unwrap_or(UNCONFIGURED_EXTRACTION_MODEL)
         .into();
 
+    if let Some(model_id) = choice.model_id() {
+        if tty_available {
+            maybe_install_local_extraction_model(model_id, true);
+        } else {
+            eprintln!(
+                "ctx: local extraction model {} will download on first use. rerun `ctx init` in a terminal to preinstall it now.",
+                model_id
+            );
+        }
+    }
+
     Ok(())
 }
 
@@ -334,6 +346,22 @@ fn maybe_install_splade_model(config: &Config, show_download_progress: bool) -> 
                 "ctx: warning: failed to install Splade_PP_en_v1: {error}. sparse retrieval stays disabled."
             );
             false
+        }
+    }
+}
+
+fn maybe_install_local_extraction_model(model_id: &str, show_download_progress: bool) {
+    match ensure_local_extraction_model(model_id, show_download_progress) {
+        Ok(path) => {
+            if show_download_progress {
+                println!("ctx: extraction model ready at {}", path.display());
+            }
+        }
+        Err(error) => {
+            eprintln!(
+                "ctx: warning: failed to preinstall local extraction model {}: {error}. ctx will retry on first extraction and fall back to heuristic extraction if the model is still unavailable.",
+                model_id
+            );
         }
     }
 }

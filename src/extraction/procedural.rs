@@ -1,4 +1,6 @@
-use anyhow::Result;
+use anyhow::{anyhow, Result};
+use serde::Deserialize;
+use std::sync::OnceLock;
 
 use crate::store::schema::TaskContext;
 
@@ -12,12 +14,113 @@ pub struct ProceduralExtraction {
     pub confidence: f32,
 }
 
+#[derive(Debug, Deserialize)]
+struct ProceduralLlmOutput {
+    task_description: String,
+    #[serde(default)]
+    steps: Vec<String>,
+    outcome: String,
+    #[serde(default)]
+    failure_modes: Vec<String>,
+    #[serde(default)]
+    context: TaskContext,
+    confidence: Option<f32>,
+}
+
 pub async fn extract_procedural(content: &str, source_hint: &str) -> Result<ProceduralExtraction> {
-    let steps = extract_steps(content);
-    let task_description = first_meaningful_line(content)
-        .unwrap_or_else(|| format!("procedure from {source_hint}"));
+    if crate::models::llm::should_use_local_llm() {
+        match extract_procedural_with_llm(content).await {
+            Ok(extraction) => return Ok(extraction),
+            Err(error) => warn_local_fallback_once(&error),
+        }
+    } else if crate::models::llm::should_warn_unimplemented_cloud_backend() {
+        warn_cloud_backend_once();
+    }
+
+    Ok(extract_procedural_rules(content, source_hint))
+}
+
+async fn extract_procedural_with_llm(content: &str) -> Result<ProceduralExtraction> {
+    let prompt = format!(
+        "extract a procedure record:\n{{\n  \"task_description\": \"one sentence\",\n  \"steps\": [\"ordered\", \"concrete\", \"actions\"],\n  \"outcome\": \"success | failure | partial\",\n  \"failure_modes\": [],\n  \"context\": {{ \"language\": null, \"framework\": null, \"environment\": null }},\n  \"confidence\": 0.0\n}}\nrespond as JSON only.\n\ncontent:\n{content}"
+    );
+    let raw = crate::models::llm::complete_json(&prompt).await?;
+    parse_procedural_llm_output(&raw)
+}
+
+fn parse_procedural_llm_output(raw: &str) -> Result<ProceduralExtraction> {
+    let json = extract_json_object(raw)?;
+    let parsed: ProceduralLlmOutput = serde_json::from_str(json)
+        .map_err(|error| anyhow!("failed to parse procedural extraction JSON: {error}"))?;
+
+    let task_description = parsed.task_description.trim().to_string();
+    if task_description.is_empty() {
+        return Err(anyhow!(
+            "procedural extraction returned an empty task description"
+        ));
+    }
+
+    let steps = parsed
+        .steps
+        .into_iter()
+        .map(|step| step.trim().to_string())
+        .filter(|step| !step.is_empty())
+        .collect::<Vec<_>>();
+    let outcome = normalize_outcome(&parsed.outcome);
+    if outcome.is_empty() {
+        return Err(anyhow!("procedural extraction returned an invalid outcome"));
+    }
 
     Ok(ProceduralExtraction {
+        task_description,
+        steps,
+        outcome,
+        failure_modes: parsed
+            .failure_modes
+            .into_iter()
+            .map(|mode| mode.trim().to_string())
+            .filter(|mode| !mode.is_empty())
+            .collect(),
+        context: parsed.context,
+        confidence: parsed.confidence.unwrap_or(0.7).clamp(0.0, 1.0),
+    })
+}
+
+fn extract_json_object(raw: &str) -> Result<&str> {
+    let start = raw
+        .find('{')
+        .ok_or_else(|| anyhow!("model output did not contain a JSON object start"))?;
+    let end = raw
+        .rfind('}')
+        .ok_or_else(|| anyhow!("model output did not contain a JSON object end"))?;
+    Ok(&raw[start..=end])
+}
+
+fn warn_local_fallback_once(error: &anyhow::Error) {
+    static WARNED: OnceLock<()> = OnceLock::new();
+    if WARNED.set(()).is_ok() {
+        eprintln!(
+            "ctx: local llama procedural extraction failed ({error}). falling back to heuristic procedural extraction."
+        );
+    }
+}
+
+fn warn_cloud_backend_once() {
+    static WARNED: OnceLock<()> = OnceLock::new();
+    if WARNED.set(()).is_ok() {
+        eprintln!(
+            "ctx: {} extraction is not implemented yet. using heuristic procedural extraction.",
+            crate::models::llm::configured_backend_label()
+        );
+    }
+}
+
+fn extract_procedural_rules(content: &str, source_hint: &str) -> ProceduralExtraction {
+    let steps = extract_steps(content);
+    let task_description =
+        first_meaningful_line(content).unwrap_or_else(|| format!("procedure from {source_hint}"));
+
+    ProceduralExtraction {
         task_description,
         steps: if steps.is_empty() {
             vec![String::from("review the source content")]
@@ -28,7 +131,7 @@ pub async fn extract_procedural(content: &str, source_hint: &str) -> Result<Proc
         failure_modes: extract_failure_modes(content),
         context: TaskContext::from_query(content),
         confidence: if content.contains('\n') { 0.78 } else { 0.62 },
-    })
+    }
 }
 
 fn extract_steps(content: &str) -> Vec<String> {
@@ -69,34 +172,24 @@ fn extract_steps(content: &str) -> Vec<String> {
 
 fn infer_outcome(content: &str) -> String {
     let lower = content.to_lowercase();
-    if ["failed", "failure", "error", "panic"]
-        .iter()
-        .any(|needle| lower.contains(needle))
-    {
+    if lower.contains("success") || lower.contains("passed") || lower.contains("completed") {
+        return String::from("success");
+    }
+    if lower.contains("fail") || lower.contains("error") || lower.contains("rollback") {
         return String::from("failure");
     }
-
-    if ["partial", "follow-up", "todo", "next step"]
-        .iter()
-        .any(|needle| lower.contains(needle))
-    {
-        return String::from("partial");
-    }
-
-    String::from("success")
+    String::from("partial")
 }
 
 fn extract_failure_modes(content: &str) -> Vec<String> {
     content
         .split(['.', '\n'])
         .map(str::trim)
-        .filter(|sentence| {
-            let lower = sentence.to_lowercase();
-            !sentence.is_empty()
-                && ["error", "failure", "failed", "warning", "issue"]
-                    .iter()
-                    .any(|needle| lower.contains(needle))
+        .filter(|line| {
+            let lower = line.to_lowercase();
+            lower.contains("fail") || lower.contains("error") || lower.contains("timeout")
         })
+        .take(5)
         .map(ToOwned::to_owned)
         .collect()
 }
@@ -105,6 +198,30 @@ fn first_meaningful_line(content: &str) -> Option<String> {
     content
         .lines()
         .map(str::trim)
-        .find(|line| !line.is_empty())
-        .map(|line| line.trim_start_matches('#').trim().to_string())
+        .find(|line| line.len() > 10)
+        .map(ToOwned::to_owned)
+}
+
+fn normalize_outcome(value: &str) -> String {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "success" => String::from("success"),
+        "failure" => String::from("failure"),
+        "partial" => String::from("partial"),
+        _ => String::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_procedural_json_with_prefix_suffix() {
+        let raw = r#"prefix {"task_description":"Deploy auth service","steps":["Run tests","Deploy"],"outcome":"success","failure_modes":[],"context":{"language":"rust","framework":"axum","environment":"staging"},"confidence":0.92} suffix"#;
+        let parsed = parse_procedural_llm_output(raw).expect("procedural json");
+        assert_eq!(parsed.task_description, "Deploy auth service");
+        assert_eq!(parsed.outcome, "success");
+        assert_eq!(parsed.steps.len(), 2);
+        assert_eq!(parsed.context.framework.as_deref(), Some("axum"));
+    }
 }

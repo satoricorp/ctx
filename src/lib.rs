@@ -387,7 +387,9 @@ mod tests {
             .lock()
             .expect("test lock poisoned");
         let tempdir = TempDir::new().expect("tempdir");
+        let home_root = TempDir::new().expect("home root");
 
+        std::env::set_var("HOME", home_root.path());
         std::env::set_var("CTX_PATH", tempdir.path());
         std::env::set_var("CTX_DISABLE_FASTEMBED", "1");
 
@@ -412,6 +414,7 @@ mod tests {
 
         std::env::remove_var("CTX_DISABLE_FASTEMBED");
         std::env::remove_var("CTX_PATH");
+        std::env::remove_var("HOME");
     }
 
     #[tokio::test]
@@ -420,7 +423,9 @@ mod tests {
             .lock()
             .expect("test lock poisoned");
         let tempdir = TempDir::new().expect("tempdir");
+        let home_root = TempDir::new().expect("home root");
 
+        std::env::set_var("HOME", home_root.path());
         std::env::set_var("CTX_PATH", tempdir.path());
         std::env::set_var("CTX_DISABLE_FASTEMBED", "1");
 
@@ -448,5 +453,6 @@ mod tests {
 
         std::env::remove_var("CTX_DISABLE_FASTEMBED");
         std::env::remove_var("CTX_PATH");
+        std::env::remove_var("HOME");
     }
 }
