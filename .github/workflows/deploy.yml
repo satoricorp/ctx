@@ -1,0 +1,71 @@
+name: deploy
+
+on:
+  push:
+    branches: [main]
+    paths: ['src/**', 'Cargo.*', 'docker/**', '.github/workflows/deploy.yml']
+  workflow_dispatch:
+    inputs:
+      deploy_infra:
+        description: 'deploy infra (requires deploy submodule)'
+        type: boolean
+        default: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+
+      - name: check deploy submodule
+        id: deploy-config
+        run: |
+          if [ -f infra/deploy/.git ] || [ -d infra/deploy/.git ]; then
+            echo "submodule_present=true"  >> "$GITHUB_OUTPUT"
+          else
+            echo "submodule_present=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "deploy_infra=${{ github.event.inputs.deploy_infra || 'false' }}" \
+            >> "$GITHUB_OUTPUT"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: run tests
+        run: cargo test --lib
+
+      - name: build release binaries
+        run: cargo build --release --bin ctx --bin ctx-server
+
+      - name: checkout deploy submodule
+        if: steps.deploy-config.outputs.submodule_present == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ secrets.INFRA_REPO }}
+          ssh-key: ${{ secrets.DEPLOY_SSH_KEY }}
+          path: infra/deploy
+
+      - name: deploy infrastructure
+        if: |
+          steps.deploy-config.outputs.submodule_present == 'true' &&
+          steps.deploy-config.outputs.deploy_infra == 'true'
+        run: bash infra/deploy/scripts/deploy-infra.sh
+
+      - name: deploy application
+        if: steps.deploy-config.outputs.submodule_present == 'true'
+        env:
+          IMAGE_TAG: sha-${{ github.sha }}
+        run: bash infra/deploy/scripts/deploy-app.sh "$IMAGE_TAG"
