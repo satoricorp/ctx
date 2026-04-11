@@ -35,7 +35,7 @@ pub struct ContextStatus {
     pub splade_enabled: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, Default)]
 pub struct TaskContext {
     pub language: Option<String>,
     pub framework: Option<String>,

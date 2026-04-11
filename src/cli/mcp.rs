@@ -7,7 +7,6 @@ pub struct McpArgs {
     pub port: u16,
 }
 
-pub async fn run(_args: McpArgs) -> Result<()> {
-    anyhow::bail!("ctx mcp is not implemented yet")
+pub async fn run(args: McpArgs) -> Result<()> {
+    crate::mcp::start_mcp_server(args.port).await
 }
-

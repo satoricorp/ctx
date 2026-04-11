@@ -29,7 +29,7 @@ impl fmt::Display for QueryType {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, Default)]
 pub struct QueryResult {
     pub content: String,
     pub summary: String,
