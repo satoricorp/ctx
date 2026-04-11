@@ -10,16 +10,16 @@ pub mod models;
 pub mod retrieval;
 pub mod store;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use chrono::Utc;
-use extraction::classifier::{ContentLayer, classify_content};
+use extraction::classifier::{classify_content, ContentLayer};
 use retrieval::query::{QueryResult, QueryType};
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
-use artifact::{Manifest, blobs_path, context_path, context_root, index_path, manifest_path};
+use artifact::{blobs_path, context_path, context_root, index_path, manifest_path, Manifest};
 use index::procedural::{ingest_procedural_document, record_procedure_structured};
 use index::semantic::ingest_semantic_document;
 use install::{ensure_base_dirs, load_config, save_config};
@@ -58,16 +58,21 @@ pub async fn add_to_context(
 
     if path.is_dir() {
         let mut total = AddOutcome::default();
-        for entry in WalkDir::new(path).into_iter().filter_map(|entry| entry.ok()) {
+        for entry in WalkDir::new(path)
+            .into_iter()
+            .filter_map(|entry| entry.ok())
+        {
             let entry_path = entry.path();
             if !entry.file_type().is_file() || should_skip_path(entry_path) {
                 continue;
             }
 
-            let content = fs::read_to_string(entry_path)
-                .with_context(|| format!("failed to read {} as utf-8 text", entry_path.display()))?;
+            let content = fs::read_to_string(entry_path).with_context(|| {
+                format!("failed to read {} as utf-8 text", entry_path.display())
+            })?;
             let source_path = display_source_path(entry_path)?;
-            let outcome = add_content_buffer(&ctx_path, context, &source_path, &content, layer).await?;
+            let outcome =
+                add_content_buffer(&ctx_path, context, &source_path, &content, layer).await?;
             total.chunks_written += outcome.chunks_written;
             total.entities_written += outcome.entities_written;
         }
@@ -126,10 +131,7 @@ pub async fn update_context(context: &str) -> Result<ContextStatus> {
     context_status(context)
 }
 
-pub async fn record_procedure(
-    context: &str,
-    record: RecordProcedureInput,
-) -> Result<String> {
+pub async fn record_procedure(context: &str, record: RecordProcedureInput) -> Result<String> {
     let ctx_path = open_existing_context(context)?;
     Ok(record_procedure_structured(&ctx_path, None, record, None)
         .await?
@@ -239,7 +241,11 @@ async fn add_content_buffer(
 
     let mut manifest = Manifest::load(ctx_path)?;
     sync_manifest_config(&mut manifest, context)?;
-    if let Some(entry) = manifest.entries.iter().find(|entry| entry.source_path == source_path) {
+    if let Some(entry) = manifest
+        .entries
+        .iter()
+        .find(|entry| entry.source_path == source_path)
+    {
         if entry.source_hash == blob.source_hash && entry.status == "indexed" {
             return Ok(AddOutcome::default());
         }
@@ -258,7 +264,9 @@ async fn add_content_buffer(
             (indexed.summary, indexed.chunk_count, indexed.entity_count)
         }
         ContentLayer::Procedural => {
-            let indexed = ingest_procedural_document(ctx_path, Some(source_path.to_string()), content).await?;
+            let indexed =
+                ingest_procedural_document(ctx_path, Some(source_path.to_string()), content)
+                    .await?;
             (indexed.summary, 0, 0)
         }
     };
@@ -359,19 +367,25 @@ fn is_virtual_source(source_path: &str) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
+pub(crate) mod test_support {
     use std::sync::{Mutex, OnceLock};
-    use tempfile::TempDir;
 
-    fn test_lock() -> &'static Mutex<()> {
+    pub(crate) fn env_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
 
     #[tokio::test]
     async fn inline_semantic_round_trip() {
-        let _guard = test_lock().lock().expect("test lock poisoned");
+        let _guard = crate::test_support::env_lock()
+            .lock()
+            .expect("test lock poisoned");
         let tempdir = TempDir::new().expect("tempdir");
 
         std::env::set_var("CTX_PATH", tempdir.path());
@@ -387,17 +401,14 @@ mod tests {
         .await
         .expect("add content");
 
-        let results = query_context(
-            "test-inline",
-            "what uses RS256",
-            QueryType::Semantic,
-            3,
-        )
-        .await
-        .expect("query context");
+        let results = query_context("test-inline", "what uses RS256", QueryType::Semantic, 3)
+            .await
+            .expect("query context");
 
         assert!(!results.is_empty());
-        assert!(results.iter().any(|result| result.summary.contains("AuthService")));
+        assert!(results
+            .iter()
+            .any(|result| result.summary.contains("AuthService")));
 
         std::env::remove_var("CTX_DISABLE_FASTEMBED");
         std::env::remove_var("CTX_PATH");
@@ -405,7 +416,9 @@ mod tests {
 
     #[tokio::test]
     async fn inline_procedural_round_trip() {
-        let _guard = test_lock().lock().expect("test lock poisoned");
+        let _guard = crate::test_support::env_lock()
+            .lock()
+            .expect("test lock poisoned");
         let tempdir = TempDir::new().expect("tempdir");
 
         std::env::set_var("CTX_PATH", tempdir.path());

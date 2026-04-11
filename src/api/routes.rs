@@ -1,6 +1,9 @@
 use axum::extract::Query;
 use axum::http::StatusCode;
-use axum::{Json, Router, routing::{get, post}};
+use axum::{
+    routing::{get, post},
+    Json, Router,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::extraction::classifier::ContentLayer;
@@ -63,11 +66,27 @@ pub struct StatusParams {
 pub struct StatusResponse {
     pub status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub context: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub indexed_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dirty_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pending_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub chunk_count: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub entity_count: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub relation_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub procedure_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extraction_model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub embedding_model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub splade_enabled: Option<bool>,
 }
 
 pub fn router() -> Router {
@@ -133,21 +152,39 @@ pub async fn record_handler(
 pub async fn status_handler(
     Query(params): Query<StatusParams>,
 ) -> Result<Json<StatusResponse>, (StatusCode, String)> {
+    // `/status` does double duty: the bare route is the deployment health check,
+    // while `?ctx=name` upgrades it into a cheap context inventory snapshot.
     if let Some(context) = params.ctx {
         let status = crate::context_status(&context).map_err(internal_error)?;
         return Ok(Json(StatusResponse {
             status: String::from("ok"),
+            context: Some(status.name),
+            indexed_count: Some(status.indexed_count),
+            dirty_count: Some(status.dirty_count),
+            pending_count: Some(status.pending_count),
             chunk_count: Some(status.counts.chunk_count),
             entity_count: Some(status.counts.entity_count),
+            relation_count: Some(status.counts.relation_count),
             procedure_count: Some(status.counts.procedure_count),
+            extraction_model: Some(status.extraction_model),
+            embedding_model: Some(status.embedding_model),
+            splade_enabled: Some(status.splade_enabled),
         }));
     }
 
     Ok(Json(StatusResponse {
         status: String::from("ok"),
+        context: None,
+        indexed_count: None,
+        dirty_count: None,
+        pending_count: None,
         chunk_count: None,
         entity_count: None,
+        relation_count: None,
         procedure_count: None,
+        extraction_model: None,
+        embedding_model: None,
+        splade_enabled: None,
     }))
 }
 
@@ -171,4 +208,59 @@ fn parse_query_type(value: Option<&str>) -> Result<QueryType, (StatusCode, Strin
 
 fn internal_error(error: impl std::fmt::Display) -> (StatusCode, String) {
     (StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[tokio::test]
+    async fn status_without_context_is_health_only() {
+        let Json(response) = status_handler(Query(StatusParams { ctx: None }))
+            .await
+            .expect("health status");
+
+        assert_eq!(response.status, "ok");
+        assert!(response.context.is_none());
+        assert!(response.chunk_count.is_none());
+        assert!(response.extraction_model.is_none());
+    }
+
+    #[tokio::test]
+    async fn status_with_context_includes_context_snapshot() {
+        let _guard = crate::test_support::env_lock()
+            .lock()
+            .expect("test lock poisoned");
+        let ctx_root = TempDir::new().expect("ctx root");
+        let home_root = TempDir::new().expect("home root");
+
+        std::env::set_var("CTX_PATH", ctx_root.path());
+        std::env::set_var("HOME", home_root.path());
+        std::env::set_var("CTX_DISABLE_FASTEMBED", "1");
+
+        crate::init_context("api-status")
+            .await
+            .expect("init context");
+        let Json(response) = status_handler(Query(StatusParams {
+            ctx: Some(String::from("api-status")),
+        }))
+        .await
+        .expect("context status");
+
+        assert_eq!(response.status, "ok");
+        assert_eq!(response.context.as_deref(), Some("api-status"));
+        assert!(response.indexed_count.is_some());
+        assert!(response.chunk_count.is_some());
+        assert!(response.entity_count.is_some());
+        assert!(response.relation_count.is_some());
+        assert!(response.procedure_count.is_some());
+        assert!(response.extraction_model.is_some());
+        assert!(response.embedding_model.is_some());
+        assert!(response.splade_enabled.is_some());
+
+        std::env::remove_var("CTX_PATH");
+        std::env::remove_var("HOME");
+        std::env::remove_var("CTX_DISABLE_FASTEMBED");
+    }
 }
