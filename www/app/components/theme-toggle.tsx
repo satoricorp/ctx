@@ -1,7 +1,7 @@
 "use client";
 
-import { useTheme } from "next-themes";
 import { useEffect, useState } from "react";
+import { useAppTheme } from "./theme-provider";
 
 function SunIcon(props: React.SVGProps<SVGSVGElement>) {
   return (
@@ -42,7 +42,7 @@ function MoonIcon(props: React.SVGProps<SVGSVGElement>) {
 
 export function ThemeToggle() {
   const [mounted, setMounted] = useState(false);
-  const { resolvedTheme, setTheme } = useTheme();
+  const { resolvedTheme, toggleTheme } = useAppTheme();
 
   useEffect(() => {
     setMounted(true);
@@ -53,16 +53,16 @@ export function ThemeToggle() {
   return (
     <button
       type="button"
-      onClick={() => setTheme(isDark ? "light" : "dark")}
-      className="fixed bottom-4 left-4 z-50 flex h-10 w-10 items-center justify-center rounded-full border border-zinc-200 bg-white text-zinc-900 shadow-sm transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:hover:bg-zinc-800"
+      onClick={toggleTheme}
+      className="text-foreground hover:text-foreground/70 fixed bottom-4 left-4 z-50 flex items-center justify-center rounded p-0.5 transition-opacity hover:opacity-80"
       aria-label="Toggle color theme"
     >
       {!mounted ? (
-        <span className="h-5 w-5" />
+        <span className="size-4" aria-hidden />
       ) : isDark ? (
-        <SunIcon className="h-5 w-5" />
+        <SunIcon className="size-4" />
       ) : (
-        <MoonIcon className="h-5 w-5" />
+        <MoonIcon className="size-4" />
       )}
     </button>
   );
