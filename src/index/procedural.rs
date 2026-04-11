@@ -7,8 +7,8 @@ use uuid::Uuid;
 use crate::artifact::index_path;
 use crate::extraction::procedural::extract_procedural;
 use crate::models::embeddings::embed_dense;
-use crate::store::schema::{AddOutcome, ProcedureRecord, RecordProcedureInput};
 use crate::store::get_or_open_env;
+use crate::store::schema::{AddOutcome, ProcedureRecord, RecordProcedureInput};
 
 #[derive(Debug, Clone)]
 pub struct ProceduralIndexSummary {
@@ -18,12 +18,7 @@ pub struct ProceduralIndexSummary {
 
 pub async fn ingest_procedural_path(ctx_path: &Path, source_path: &Path) -> Result<AddOutcome> {
     let content = fs::read_to_string(source_path)?;
-    ingest_procedural_document(
-        ctx_path,
-        Some(source_path.display().to_string()),
-        &content,
-    )
-    .await?;
+    ingest_procedural_document(ctx_path, Some(source_path.display().to_string()), &content).await?;
     Ok(AddOutcome {
         chunks_written: 0,
         entities_written: 0,
@@ -35,7 +30,8 @@ pub async fn ingest_procedural_document(
     source_path: Option<String>,
     content: &str,
 ) -> Result<ProceduralIndexSummary> {
-    let extraction = extract_procedural(content, source_path.as_deref().unwrap_or("procedural")).await?;
+    let extraction =
+        extract_procedural(content, source_path.as_deref().unwrap_or("procedural")).await?;
     let input = RecordProcedureInput {
         task: extraction.task_description,
         steps: extraction.steps,

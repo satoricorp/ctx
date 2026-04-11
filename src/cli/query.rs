@@ -16,7 +16,9 @@ pub struct QueryArgs {
 }
 
 pub async fn run(args: QueryArgs) -> Result<()> {
-    let context = args.context.unwrap_or(crate::artifact::infer_context_name()?);
+    let context = args
+        .context
+        .unwrap_or(crate::artifact::infer_context_name()?);
     let results = crate::query_context(&context, &args.query, args.kind, args.k).await?;
     if results.is_empty() {
         println!("no results");

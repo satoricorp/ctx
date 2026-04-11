@@ -4,4 +4,3 @@ use anyhow::Result;
 async fn main() -> Result<()> {
     ctx::cli::run().await
 }
-

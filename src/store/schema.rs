@@ -161,7 +161,11 @@ impl IndexState {
             .chunks
             .values()
             .map(|chunk| chunk.created_at)
-            .chain(self.procedures.values().map(|procedure| procedure.created_at))
+            .chain(
+                self.procedures
+                    .values()
+                    .map(|procedure| procedure.created_at),
+            )
             .max()?;
 
         Utc.timestamp_opt(latest, 0).single()
@@ -175,7 +179,8 @@ impl IndexState {
             .map(|chunk| chunk.id.clone())
             .collect();
 
-        self.chunks.retain(|_, chunk| chunk.source_path != source_path);
+        self.chunks
+            .retain(|_, chunk| chunk.source_path != source_path);
         self.entities
             .retain(|_, entity| !chunk_ids.contains(&entity.source_id));
         self.relations

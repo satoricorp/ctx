@@ -3,19 +3,17 @@ pub mod tools;
 use anyhow::Result;
 use axum::Router;
 use rmcp::transport::streamable_http_server::{
-    StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
+    session::local::LocalSessionManager, StreamableHttpServerConfig, StreamableHttpService,
 };
 use rmcp::{
-    Json, ServerHandler,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::{ErrorData, ServerCapabilities, ServerInfo},
-    tool, tool_handler, tool_router,
+    tool, tool_handler, tool_router, Json, ServerHandler,
 };
 
 use crate::extraction::classifier::ContentLayer;
 use crate::mcp::tools::{
-    AddToolInput, AddToolOutput, QueryToolInput, QueryToolOutput, RecordToolInput,
-    RecordToolOutput,
+    AddToolInput, AddToolOutput, QueryToolInput, QueryToolOutput, RecordToolInput, RecordToolOutput,
 };
 use crate::retrieval::query::QueryType;
 use crate::store::schema::RecordProcedureInput;
@@ -78,7 +76,10 @@ impl CtxMcpServer {
         Ok(Json(QueryToolOutput { results }))
     }
 
-    #[tool(name = "ctx_record", description = "record a structured procedure outcome")]
+    #[tool(
+        name = "ctx_record",
+        description = "record a structured procedure outcome"
+    )]
     pub async fn ctx_record(
         &self,
         Parameters(input): Parameters<RecordToolInput>,
@@ -129,7 +130,10 @@ fn parse_content_layer(value: Option<&str>) -> Result<Option<ContentLayer>, Erro
         None | Some("") => Ok(None),
         Some("semantic") => Ok(Some(ContentLayer::Semantic)),
         Some("procedural") => Ok(Some(ContentLayer::Procedural)),
-        Some(other) => Err(ErrorData::invalid_params(format!("unknown type {}", other), None)),
+        Some(other) => Err(ErrorData::invalid_params(
+            format!("unknown type {}", other),
+            None,
+        )),
     }
 }
 
@@ -138,7 +142,10 @@ fn parse_query_type(value: Option<&str>) -> Result<QueryType, ErrorData> {
         None | Some("") | Some("all") => Ok(QueryType::All),
         Some("semantic") => Ok(QueryType::Semantic),
         Some("procedural") => Ok(QueryType::Procedural),
-        Some(other) => Err(ErrorData::invalid_params(format!("unknown type {}", other), None)),
+        Some(other) => Err(ErrorData::invalid_params(
+            format!("unknown type {}", other),
+            None,
+        )),
     }
 }
 

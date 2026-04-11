@@ -34,4 +34,3 @@ impl CCTMMFusion {
         merged.into_iter().map(|(id, _)| id).collect()
     }
 }
-

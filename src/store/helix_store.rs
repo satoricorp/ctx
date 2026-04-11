@@ -5,9 +5,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 use helix_db::helix_engine::storage_core::version_info::VersionInfo;
+use helix_db::helix_engine::traversal_core::config::Config as HelixConfig;
 use helix_db::helix_engine::traversal_core::HelixGraphEngine;
 use helix_db::helix_engine::traversal_core::HelixGraphEngineOpts;
-use helix_db::helix_engine::traversal_core::config::Config as HelixConfig;
 
 use crate::store::schema::IndexState;
 

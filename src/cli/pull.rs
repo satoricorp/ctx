@@ -10,4 +10,3 @@ pub struct PullArgs {
 pub async fn run(_args: PullArgs) -> Result<()> {
     anyhow::bail!("ctx pull is not implemented yet")
 }
-

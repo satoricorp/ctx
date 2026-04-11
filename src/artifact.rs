@@ -41,4 +41,3 @@ pub fn infer_context_name() -> Result<String> {
         .map(ToOwned::to_owned)
         .context("could not infer context name from current directory")
 }
-

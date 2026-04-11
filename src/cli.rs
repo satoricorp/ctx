@@ -45,4 +45,3 @@ pub async fn run() -> Result<()> {
         Commands::Pull(args) => pull::run(args).await,
     }
 }
-

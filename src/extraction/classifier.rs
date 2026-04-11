@@ -42,16 +42,20 @@ pub fn classify_content(source_path: &Path, content: &str) -> ContentLayer {
         }
 
         let lower = trimmed.to_lowercase();
-        if ["success", "failure", "failed", "partial", "outcome", "result"]
-            .iter()
-            .any(|needle| lower.contains(needle))
+        if [
+            "success", "failure", "failed", "partial", "outcome", "result",
+        ]
+        .iter()
+        .any(|needle| lower.contains(needle))
         {
             outcome_signals += 1;
         }
 
-        if ["run", "open", "install", "verify", "add", "remove", "update", "create"]
-            .iter()
-            .any(|verb| lower.starts_with(verb))
+        if [
+            "run", "open", "install", "verify", "add", "remove", "update", "create",
+        ]
+        .iter()
+        .any(|verb| lower.starts_with(verb))
         {
             imperative_signals += 1;
         }

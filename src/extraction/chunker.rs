@@ -67,11 +67,9 @@ impl Chunker {
                 }
             }
             Some("txt") => Self::SentenceWindow,
-            Some("ts") | Some("tsx") | Some("js") | Some("jsx") | Some("rs")
-            | Some("py") | Some("go") | Some("java") | Some("c") | Some("cpp")
-            | Some("cs") | Some("rb") | Some("swift") | Some("kt") | Some("scala") => {
-                Self::SyntaxAware
-            }
+            Some("ts") | Some("tsx") | Some("js") | Some("jsx") | Some("rs") | Some("py")
+            | Some("go") | Some("java") | Some("c") | Some("cpp") | Some("cs") | Some("rb")
+            | Some("swift") | Some("kt") | Some("scala") => Self::SyntaxAware,
             Some("jsonl") => {
                 if content.contains("\"role\"") || content.contains("\"speaker\"") {
                     Self::TurnBased
@@ -414,7 +412,14 @@ fn parse_turns(content: &str) -> Vec<ParsedTurn> {
         if trimmed.to_lowercase().starts_with("session:") {
             turns.push(ParsedTurn {
                 text: String::new(),
-                session_id: Some(trimmed.split(':').nth(1).unwrap_or_default().trim().to_string()),
+                session_id: Some(
+                    trimmed
+                        .split(':')
+                        .nth(1)
+                        .unwrap_or_default()
+                        .trim()
+                        .to_string(),
+                ),
                 is_session_boundary: true,
             });
             continue;

@@ -6,11 +6,11 @@ use std::path::Path;
 use uuid::Uuid;
 
 use crate::artifact::index_path;
-use crate::extraction::chunker::{Chunk, chunk_content};
+use crate::extraction::chunker::{chunk_content, Chunk};
 use crate::extraction::semantic::extract_semantic;
 use crate::models::embeddings::embed_dense;
-use crate::store::schema::{AddOutcome, ChunkRecord, EntityRecord, RelationRecord};
 use crate::store::get_or_open_env;
+use crate::store::schema::{AddOutcome, ChunkRecord, EntityRecord, RelationRecord};
 
 #[derive(Debug, Clone)]
 pub struct SemanticIndexSummary {
@@ -21,7 +21,8 @@ pub struct SemanticIndexSummary {
 
 pub async fn ingest_semantic_path(ctx_path: &Path, source_path: &Path) -> Result<AddOutcome> {
     let content = fs::read_to_string(source_path)?;
-    let summary = ingest_semantic_document(ctx_path, &source_path.display().to_string(), &content).await?;
+    let summary =
+        ingest_semantic_document(ctx_path, &source_path.display().to_string(), &content).await?;
     Ok(AddOutcome {
         chunks_written: summary.chunk_count,
         entities_written: summary.entity_count,
@@ -37,7 +38,12 @@ pub async fn ingest_semantic_document(
     let timestamp = Utc::now().timestamp();
     let mut chunks = chunk_content(Path::new(source_path), content);
     if chunks.is_empty() && !content.trim().is_empty() {
-        chunks.push(Chunk::new(content.trim().to_string(), "sentence-window", 0, content.len()));
+        chunks.push(Chunk::new(
+            content.trim().to_string(),
+            "sentence-window",
+            0,
+            content.len(),
+        ));
     }
 
     let mut chunk_records = Vec::new();

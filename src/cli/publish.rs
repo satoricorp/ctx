@@ -10,4 +10,3 @@ pub struct PublishArgs {
 pub async fn run(_args: PublishArgs) -> Result<()> {
     anyhow::bail!("ctx publish is not implemented yet")
 }
-

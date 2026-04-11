@@ -6,4 +6,3 @@ pub use schema::{
     AddOutcome, ChunkRecord, ContextListing, ContextStatus, EntityRecord, IndexCounts, IndexState,
     ProcedureRecord, QueryCandidate, RecordProcedureInput, RelationRecord, TaskContext,
 };
-

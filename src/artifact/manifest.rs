@@ -62,8 +62,10 @@ impl Manifest {
             ));
         }
 
-        serde_json::from_slice(&fs::read(&path).with_context(|| format!("read {}", path.display()))?)
-            .with_context(|| format!("parse {}", path.display()))
+        serde_json::from_slice(
+            &fs::read(&path).with_context(|| format!("read {}", path.display()))?,
+        )
+        .with_context(|| format!("parse {}", path.display()))
     }
 
     pub fn save(&self, ctx_path: &Path) -> Result<()> {
@@ -75,7 +77,8 @@ impl Manifest {
     }
 
     pub fn entry_for_mut(&mut self, source_path: &str) -> Option<&mut ManifestEntry> {
-        self.entries.iter_mut().find(|entry| entry.source_path == source_path)
+        self.entries
+            .iter_mut()
+            .find(|entry| entry.source_path == source_path)
     }
 }
-

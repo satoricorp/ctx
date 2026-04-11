@@ -154,6 +154,15 @@ pub fn save_user_config(user: &UserConfig) -> Result<()> {
     save_config(&config)
 }
 
+pub fn effective_alpha(config: &Config) -> f32 {
+    std::env::var("CTX_ALPHA")
+        .ok()
+        .and_then(|value| value.parse::<f32>().ok())
+        .filter(|alpha| alpha.is_finite())
+        .map(|alpha| alpha.clamp(0.0, 1.0))
+        .unwrap_or(config.alpha)
+}
+
 pub fn auth_header(config: &Config) -> Result<String> {
     let user = config
         .user
@@ -562,5 +571,38 @@ mod tests {
             default_noninteractive_choice(4),
             LocalExtractionChoice::Skip
         );
+    }
+
+    #[test]
+    fn effective_alpha_prefers_env_and_clamps() {
+        let _guard = crate::test_support::env_lock()
+            .lock()
+            .expect("test lock poisoned");
+        let original = std::env::var("CTX_ALPHA").ok();
+        let config = Config {
+            alpha: 0.7,
+            ..Config::default()
+        };
+
+        std::env::remove_var("CTX_ALPHA");
+        assert_eq!(effective_alpha(&config), 0.7);
+
+        std::env::set_var("CTX_ALPHA", "0.9");
+        assert_eq!(effective_alpha(&config), 0.9);
+
+        std::env::set_var("CTX_ALPHA", "2.5");
+        assert_eq!(effective_alpha(&config), 1.0);
+
+        std::env::set_var("CTX_ALPHA", "-1.0");
+        assert_eq!(effective_alpha(&config), 0.0);
+
+        std::env::set_var("CTX_ALPHA", "not-a-number");
+        assert_eq!(effective_alpha(&config), 0.7);
+
+        if let Some(value) = original {
+            std::env::set_var("CTX_ALPHA", value);
+        } else {
+            std::env::remove_var("CTX_ALPHA");
+        }
     }
 }

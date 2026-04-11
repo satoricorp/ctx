@@ -8,7 +8,7 @@ use crate::artifact::index_path;
 use crate::install::load_config;
 use crate::models::embeddings::{cosine_similarity, embed_dense, lexical_overlap};
 use crate::retrieval::rerank::rerank_documents;
-use crate::store::{ChunkRecord, ProcedureRecord, TaskContext, get_or_open_env};
+use crate::store::{get_or_open_env, ChunkRecord, ProcedureRecord, TaskContext};
 
 #[derive(Debug, Clone, Copy, Default, ValueEnum, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -52,11 +52,18 @@ pub async fn unified_query(query: &str, ctx_path: &Path, k: usize) -> Result<Vec
     Ok(results)
 }
 
-pub async fn query(query: &str, kind: QueryType, ctx_path: &Path, k: usize) -> Result<Vec<QueryResult>> {
+pub async fn query(
+    query: &str,
+    kind: QueryType,
+    ctx_path: &Path,
+    k: usize,
+) -> Result<Vec<QueryResult>> {
     match kind {
         QueryType::All => unified_query(query, ctx_path, k).await,
         QueryType::Semantic => semantic_query(query, ctx_path, k).await,
-        QueryType::Procedural => procedural_query(query, &TaskContext::from_query(query), ctx_path, k).await,
+        QueryType::Procedural => {
+            procedural_query(query, &TaskContext::from_query(query), ctx_path, k).await
+        }
     }
 }
 
@@ -64,6 +71,7 @@ async fn semantic_query(query: &str, ctx_path: &Path, k: usize) -> Result<Vec<Qu
     let env = get_or_open_env(&index_path(ctx_path))?;
     let state = env.state();
     let config = load_config().unwrap_or_default();
+    let alpha = crate::install::effective_alpha(&config);
     let query_embedding = embed_dense(query).await?;
 
     let mut candidates: Vec<(ChunkRecord, f32)> = state
@@ -73,8 +81,8 @@ async fn semantic_query(query: &str, ctx_path: &Path, k: usize) -> Result<Vec<Qu
         .map(|chunk| {
             let dense = cosine_similarity(&query_embedding, &chunk.embedding);
             let lexical = lexical_overlap(query, &chunk.index_text);
-            let score = config.alpha * ((dense + 1.0) / 2.0).clamp(0.0, 1.0)
-                + (1.0 - config.alpha) * lexical.clamp(0.0, 1.0);
+            let score = alpha * ((dense + 1.0) / 2.0).clamp(0.0, 1.0)
+                + (1.0 - alpha) * lexical.clamp(0.0, 1.0);
             (chunk, score)
         })
         .collect();

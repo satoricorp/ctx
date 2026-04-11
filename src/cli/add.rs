@@ -15,7 +15,9 @@ pub struct AddArgs {
 }
 
 pub async fn run(args: AddArgs) -> Result<()> {
-    let context = args.context.unwrap_or(crate::artifact::infer_context_name()?);
+    let context = args
+        .context
+        .unwrap_or(crate::artifact::infer_context_name()?);
     let outcome = crate::add_to_context(&context, &args.path, args.layer).await?;
     println!(
         "indexed {} chunks {} entities",

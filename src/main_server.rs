@@ -18,8 +18,16 @@ async fn main() -> Result<()> {
         .unwrap_or_else(|| std::env::var("CTX_HOST").unwrap_or_else(|_| String::from("0.0.0.0")));
     let port = args
         .port
-        .or_else(|| std::env::var("CTX_PORT").ok().and_then(|value| value.parse().ok()))
-        .or_else(|| std::env::var("PORT").ok().and_then(|value| value.parse().ok()))
+        .or_else(|| {
+            std::env::var("CTX_PORT")
+                .ok()
+                .and_then(|value| value.parse().ok())
+        })
+        .or_else(|| {
+            std::env::var("PORT")
+                .ok()
+                .and_then(|value| value.parse().ok())
+        })
         .unwrap_or(8080);
 
     ctx::api::run_server(&host, port).await

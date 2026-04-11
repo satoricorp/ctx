@@ -12,4 +12,3 @@ pub enum EmbeddingBackend {
     OpenAI,
     FastEmbed,
 }
-

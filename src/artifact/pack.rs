@@ -22,4 +22,3 @@ pub fn unpack_context(archive_path: &Path, destination_root: &Path) -> Result<()
     archive.unpack(destination_root)?;
     Ok(())
 }
-
