@@ -7,7 +7,9 @@ pub struct InitArgs {
     pub name: Option<String>,
 }
 
-pub async fn run(_args: InitArgs) -> Result<()> {
-    anyhow::bail!("ctx init is not implemented yet")
+pub async fn run(args: InitArgs) -> Result<()> {
+    let name = args.name.unwrap_or(crate::artifact::infer_context_name()?);
+    let status = crate::init_context(&name).await?;
+    println!("initialized {}", status.name);
+    Ok(())
 }
-

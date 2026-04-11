@@ -14,7 +14,12 @@ pub struct AddArgs {
     pub layer: Option<ContentLayer>,
 }
 
-pub async fn run(_args: AddArgs) -> Result<()> {
-    anyhow::bail!("ctx add is not implemented yet")
+pub async fn run(args: AddArgs) -> Result<()> {
+    let context = args.context.unwrap_or(crate::artifact::infer_context_name()?);
+    let outcome = crate::add_to_context(&context, &args.path, args.layer).await?;
+    println!(
+        "indexed {} chunks {} entities",
+        outcome.chunks_written, outcome.entities_written
+    );
+    Ok(())
 }
-

@@ -1,6 +1,6 @@
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AddOutcome {
@@ -59,6 +59,19 @@ impl TaskContext {
                 .find(|needle| lower.contains(**needle))
                 .map(|needle| (*needle).to_string()),
         }
+    }
+
+    pub fn matches(&self, other: &Self) -> bool {
+        fn match_field(left: &Option<String>, right: &Option<String>) -> bool {
+            match (left, right) {
+                (Some(left), Some(right)) => left == right,
+                _ => true,
+            }
+        }
+
+        match_field(&self.language, &other.language)
+            && match_field(&self.framework, &other.framework)
+            && match_field(&self.environment, &other.environment)
     }
 }
 
@@ -142,5 +155,37 @@ impl IndexState {
             procedure_count: self.procedures.len(),
         }
     }
-}
 
+    pub fn latest_update(&self) -> Option<DateTime<Utc>> {
+        let latest = self
+            .chunks
+            .values()
+            .map(|chunk| chunk.created_at)
+            .chain(self.procedures.values().map(|procedure| procedure.created_at))
+            .max()?;
+
+        Utc.timestamp_opt(latest, 0).single()
+    }
+
+    pub fn remove_source(&mut self, source_path: &str) {
+        let chunk_ids: HashSet<String> = self
+            .chunks
+            .values()
+            .filter(|chunk| chunk.source_path == source_path)
+            .map(|chunk| chunk.id.clone())
+            .collect();
+
+        self.chunks.retain(|_, chunk| chunk.source_path != source_path);
+        self.entities
+            .retain(|_, entity| !chunk_ids.contains(&entity.source_id));
+        self.relations
+            .retain(|_, relation| !chunk_ids.contains(&relation.source_id));
+        self.procedures.retain(|_, procedure| {
+            procedure
+                .source_path
+                .as_deref()
+                .map(|path| path != source_path)
+                .unwrap_or(true)
+        });
+    }
+}
