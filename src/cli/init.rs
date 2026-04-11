@@ -8,6 +8,8 @@ pub struct InitArgs {
 }
 
 pub async fn run(args: InitArgs) -> Result<()> {
+    crate::install::ensure_model_choice()?;
+
     let name = args.name.unwrap_or(crate::artifact::infer_context_name()?);
     let status = crate::init_context(&name).await?;
     println!("initialized {}", status.name);

@@ -1,7 +1,12 @@
-use anyhow::{Result, anyhow};
-use fastembed::{EmbeddingModel, TextEmbedding, TextInitOptions};
-use std::collections::{HashSet, hash_map::DefaultHasher};
+use anyhow::{anyhow, Result};
+use fastembed::{
+    EmbeddingModel, RerankInitOptions, RerankerModel, SparseInitOptions, SparseModel,
+    SparseTextEmbedding, TextEmbedding, TextInitOptions, TextRerank,
+};
+use std::collections::{hash_map::DefaultHasher, HashSet};
+use std::fs;
 use std::hash::{Hash, Hasher};
+use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 
 use crate::install::{ensure_base_dirs, load_config, resolve_models_dir};
@@ -15,10 +20,27 @@ enum EmbedderState {
 }
 
 static EMBEDDER: OnceLock<Mutex<EmbedderState>> = OnceLock::new();
+static FASTEMBED_FALLBACK_WARNED: OnceLock<()> = OnceLock::new();
 
 pub async fn embed_dense(text: &str) -> Result<Vec<f32>> {
     let text = text.to_owned();
     tokio::task::spawn_blocking(move || embed_dense_sync(&text)).await?
+}
+
+pub fn install_required_fastembed_assets(
+    cache_dir: &Path,
+    show_download_progress: bool,
+) -> Result<()> {
+    fs::create_dir_all(cache_dir)?;
+    let _embedder = create_dense_embedder(cache_dir, show_download_progress)?;
+    let _reranker = create_reranker(cache_dir, show_download_progress)?;
+    Ok(())
+}
+
+pub fn install_splade_asset(cache_dir: &Path, show_download_progress: bool) -> Result<()> {
+    fs::create_dir_all(cache_dir)?;
+    let _sparse = create_splade_embedder(cache_dir, show_download_progress)?;
+    Ok(())
 }
 
 pub fn cosine_similarity(left: &[f32], right: &[f32]) -> f32 {
@@ -69,7 +91,10 @@ fn embed_dense_sync(text: &str) -> Result<Vec<f32>> {
 
     match try_fastembed(text) {
         Ok(embedding) => Ok(embedding),
-        Err(_) => Ok(hash_embedding(text, HASH_DIMENSIONS)),
+        Err(error) => {
+            warn_fastembed_fallback(&error);
+            Ok(hash_embedding(text, HASH_DIMENSIONS))
+        }
     }
 }
 
@@ -80,11 +105,9 @@ fn try_fastembed(text: &str) -> Result<Vec<f32>> {
     if matches!(&*state, EmbedderState::Uninitialized) {
         ensure_base_dirs().ok();
         let config = load_config().unwrap_or_default();
-        let options = TextInitOptions::new(EmbeddingModel::AllMiniLML6V2)
-            .with_cache_dir(resolve_models_dir(&config))
-            .with_show_download_progress(false);
+        let cache_dir = resolve_models_dir(&config);
 
-        match TextEmbedding::try_new(options) {
+        match create_dense_embedder(&cache_dir, false) {
             Ok(embedder) => *state = EmbedderState::Ready(embedder),
             Err(error) => *state = EmbedderState::Failed(error.to_string()),
         }
@@ -105,8 +128,42 @@ fn try_fastembed(text: &str) -> Result<Vec<f32>> {
     }
 }
 
+fn create_dense_embedder(cache_dir: &Path, show_download_progress: bool) -> Result<TextEmbedding> {
+    let options = TextInitOptions::new(EmbeddingModel::AllMiniLML6V2)
+        .with_cache_dir(cache_dir.to_path_buf())
+        .with_show_download_progress(show_download_progress);
+    TextEmbedding::try_new(options)
+}
+
+fn create_reranker(cache_dir: &Path, show_download_progress: bool) -> Result<TextRerank> {
+    let options = RerankInitOptions::new(RerankerModel::BGERerankerBase)
+        .with_cache_dir(cache_dir.to_path_buf())
+        .with_show_download_progress(show_download_progress);
+    TextRerank::try_new(options)
+}
+
+fn create_splade_embedder(
+    cache_dir: &Path,
+    show_download_progress: bool,
+) -> Result<SparseTextEmbedding> {
+    let options = SparseInitOptions::new(SparseModel::SPLADEPPV1)
+        .with_cache_dir(cache_dir.to_path_buf())
+        .with_show_download_progress(show_download_progress);
+    SparseTextEmbedding::try_new(options)
+}
+
 fn normalize_whitespace(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn warn_fastembed_fallback(error: &anyhow::Error) {
+    // The runtime deliberately stays usable when model downloads fail, but we only
+    // want to surface that fallback once so local batch operations don't get noisy.
+    if FASTEMBED_FALLBACK_WARNED.set(()).is_ok() {
+        eprintln!(
+            "ctx: fastembed is unavailable ({error}). falling back to deterministic hash embeddings until the local models are installed."
+        );
+    }
 }
 
 fn hash_embedding(text: &str, dimensions: usize) -> Vec<f32> {
@@ -119,7 +176,11 @@ fn hash_embedding(text: &str, dimensions: usize) -> Vec<f32> {
         token.hash(&mut hasher);
         let hash = hasher.finish() as usize;
         let index = hash % dimensions;
-        let sign = if (hash / dimensions) % 2 == 0 { 1.0 } else { -1.0 };
+        let sign = if (hash / dimensions) % 2 == 0 {
+            1.0
+        } else {
+            -1.0
+        };
         vector[index] += sign;
     }
 
