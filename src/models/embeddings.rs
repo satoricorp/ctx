@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use fastembed::{
     EmbeddingModel, RerankInitOptions, RerankerModel, SparseInitOptions, SparseModel,
     SparseTextEmbedding, TextEmbedding, TextInitOptions, TextRerank,
@@ -81,6 +81,17 @@ pub fn tokenize_terms(text: &str) -> Vec<String> {
 }
 
 fn embed_dense_sync(text: &str) -> Result<Vec<f32>> {
+    let config = load_config().unwrap_or_default();
+    if let Some(model) = config.embedding_model.strip_prefix("openai:") {
+        let model = model.trim();
+        if !model.is_empty() {
+            if text.trim().is_empty() {
+                return Ok(vec![0.0; openai_embedding_dimensions(model)]);
+            }
+            return openai_embed_sync(text.trim(), model);
+        }
+    }
+
     if text.trim().is_empty() {
         return Ok(vec![0.0; HASH_DIMENSIONS]);
     }
@@ -96,6 +107,65 @@ fn embed_dense_sync(text: &str) -> Result<Vec<f32>> {
             Ok(hash_embedding(text, HASH_DIMENSIONS))
         }
     }
+}
+
+/// Default output dimensions for OpenAI embedding models (no `dimensions` API parameter).
+fn openai_embedding_dimensions(model: &str) -> usize {
+    let lower = model.to_ascii_lowercase();
+    if lower.contains("3-large") {
+        return 3072;
+    }
+    if lower.contains("3-small") {
+        return 1536;
+    }
+    // ada-002 and most others
+    1536
+}
+
+fn openai_embed_sync(text: &str, model: &str) -> Result<Vec<f32>> {
+    let api_key = std::env::var("OPENAI_API_KEY").map_err(|_| {
+        anyhow!("OPENAI_API_KEY is not set (required for embedding_model openai:{model})")
+    })?;
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .context("failed to build HTTP client for OpenAI embeddings")?;
+
+    let body = serde_json::json!({
+        "model": model,
+        "input": text,
+    });
+
+    let response = client
+        .post("https://api.openai.com/v1/embeddings")
+        .header("Authorization", format!("Bearer {}", api_key))
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .send()
+        .context("openai embeddings request failed")?;
+
+    let status = response.status();
+    let body_text = response
+        .text()
+        .context("failed to read OpenAI embeddings response body")?;
+    if !status.is_success() {
+        return Err(anyhow!(
+            "OpenAI embeddings API error ({}): {}",
+            status,
+            body_text.trim()
+        ));
+    }
+
+    let v: serde_json::Value =
+        serde_json::from_str(&body_text).context("failed to parse OpenAI embeddings JSON")?;
+    let arr = v["data"][0]["embedding"]
+        .as_array()
+        .ok_or_else(|| anyhow!("unexpected OpenAI embeddings response (missing data[0].embedding)"))?;
+    Ok(arr
+        .iter()
+        .filter_map(|x| x.as_f64().map(|f| f as f32))
+        .collect())
 }
 
 fn try_fastembed(text: &str) -> Result<Vec<f32>> {

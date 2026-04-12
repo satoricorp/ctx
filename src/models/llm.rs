@@ -68,9 +68,61 @@ pub fn should_use_local_llm() -> bool {
     local_model_spec(configured_extraction_model().as_str()).is_some()
 }
 
-pub fn should_warn_unimplemented_cloud_backend() -> bool {
+/// True when config selects OpenAI or Anthropic and the matching API key is present.
+pub fn should_use_cloud_extraction() -> bool {
     let configured = configured_extraction_model();
-    configured.starts_with("openai:") || configured.starts_with("anthropic:")
+    if configured.starts_with("openai:") {
+        return openai_api_key_present();
+    }
+    if configured.starts_with("anthropic:") {
+        return anthropic_api_key_present();
+    }
+    false
+}
+
+fn openai_api_key_present() -> bool {
+    std::env::var("OPENAI_API_KEY")
+        .ok()
+        .map(|k| !k.trim().is_empty())
+        .unwrap_or(false)
+}
+
+fn anthropic_api_key_present() -> bool {
+    std::env::var("ANTHROPIC_API_KEY")
+        .ok()
+        .map(|k| !k.trim().is_empty())
+        .unwrap_or(false)
+}
+
+/// Config names OpenAI or Anthropic extraction but the matching env key is unset.
+pub fn should_warn_missing_extraction_api_key() -> bool {
+    let configured = configured_extraction_model();
+    if configured.starts_with("openai:") {
+        return !openai_api_key_present();
+    }
+    if configured.starts_with("anthropic:") {
+        return !anthropic_api_key_present();
+    }
+    false
+}
+
+pub fn warn_missing_extraction_api_key_once() {
+    use std::sync::OnceLock;
+    static WARNED: OnceLock<()> = OnceLock::new();
+    if WARNED.set(()).is_ok() {
+        let configured = configured_extraction_model();
+        let hint = if configured.starts_with("openai:") {
+            "set OPENAI_API_KEY"
+        } else if configured.starts_with("anthropic:") {
+            "set ANTHROPIC_API_KEY"
+        } else {
+            "set the matching API key"
+        };
+        eprintln!(
+            "ctx: extraction_model is {} but {}. using heuristic extraction.",
+            configured, hint
+        );
+    }
 }
 
 pub fn configured_backend_label() -> String {
@@ -90,18 +142,115 @@ pub fn local_model_path(model_id: &str, models_dir: &Path) -> Result<PathBuf> {
 
 fn complete_json_sync(prompt: &str) -> Result<String> {
     let config = load_config().unwrap_or_default();
-    match config.extraction_model.as_str() {
-        model if model.starts_with("openai:") => {
-            bail!("OpenAI-backed extraction is not implemented yet")
+    let model = config.extraction_model.as_str();
+    if let Some(rest) = model.strip_prefix("openai:") {
+        let model_id = rest.trim();
+        if model_id.is_empty() {
+            bail!("invalid extraction_model: empty openai model id");
         }
-        model if model.starts_with("anthropic:") => {
-            bail!("Anthropic-backed extraction is not implemented yet")
-        }
-        model => {
-            let model_path = ensure_local_extraction_model_for_config(&config, model, false)?;
-            run_llama_completion(&model_path, prompt, runtime_config_from_env())
-        }
+        return openai_chat_json(prompt, model_id);
     }
+    if let Some(rest) = model.strip_prefix("anthropic:") {
+        let model_id = rest.trim();
+        if model_id.is_empty() {
+            bail!("invalid extraction_model: empty anthropic model id");
+        }
+        return anthropic_messages_json(prompt, model_id);
+    }
+
+    let model_path = ensure_local_extraction_model_for_config(&config, model, false)?;
+    run_llama_completion(&model_path, prompt, runtime_config_from_env())
+}
+
+fn openai_chat_json(prompt: &str, model: &str) -> Result<String> {
+    let api_key = std::env::var("OPENAI_API_KEY").map_err(|_| {
+        anyhow!("OPENAI_API_KEY is not set (required for extraction model openai:{model})")
+    })?;
+
+    let client = Client::builder()
+        .timeout(std::time::Duration::from_secs(120))
+        .build()
+        .context("failed to build HTTP client for OpenAI")?;
+
+    let body = serde_json::json!({
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": 4096,
+        "temperature": 0.2,
+        "response_format": {"type": "json_object"},
+    });
+
+    let response = client
+        .post("https://api.openai.com/v1/chat/completions")
+        .header("Authorization", format!("Bearer {}", api_key))
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .send()
+        .context("openai chat completions request failed")?;
+
+    let status = response.status();
+    let body_text = response
+        .text()
+        .context("failed to read OpenAI response body")?;
+    if !status.is_success() {
+        bail!("OpenAI API error ({}): {}", status, body_text.trim());
+    }
+
+    let v: serde_json::Value =
+        serde_json::from_str(&body_text).context("failed to parse OpenAI JSON response")?;
+    let text = v["choices"][0]["message"]["content"]
+        .as_str()
+        .ok_or_else(|| anyhow!("unexpected OpenAI response shape (missing choices[0].message.content)"))?;
+    Ok(text.to_string())
+}
+
+fn anthropic_messages_json(prompt: &str, model: &str) -> Result<String> {
+    let api_key = std::env::var("ANTHROPIC_API_KEY").map_err(|_| {
+        anyhow!(
+            "ANTHROPIC_API_KEY is not set (required for extraction model anthropic:{model})"
+        )
+    })?;
+
+    let client = Client::builder()
+        .timeout(std::time::Duration::from_secs(120))
+        .build()
+        .context("failed to build HTTP client for Anthropic")?;
+
+    let body = serde_json::json!({
+        "model": model,
+        "max_tokens": 4096,
+        "messages": [{"role": "user", "content": prompt}],
+    });
+
+    let response = client
+        .post("https://api.anthropic.com/v1/messages")
+        .header("x-api-key", api_key)
+        .header("anthropic-version", "2023-06-01")
+        .header("Content-Type", "application/json")
+        .json(&body)
+        .send()
+        .context("anthropic messages request failed")?;
+
+    let status = response.status();
+    let body_text = response
+        .text()
+        .context("failed to read Anthropic response body")?;
+    if !status.is_success() {
+        bail!("Anthropic API error ({}): {}", status, body_text.trim());
+    }
+
+    let v: serde_json::Value =
+        serde_json::from_str(&body_text).context("failed to parse Anthropic JSON response")?;
+    let content = v
+        .get("content")
+        .and_then(|c| c.as_array())
+        .and_then(|blocks| blocks.first())
+        .ok_or_else(|| anyhow!("unexpected Anthropic response shape (missing content[0])"))?;
+    let text = content
+        .get("text")
+        .and_then(|t| t.as_str())
+        .ok_or_else(|| anyhow!("unexpected Anthropic content block (missing text)"))?;
+    Ok(text.to_string())
 }
 
 fn ensure_local_extraction_model_for_config(

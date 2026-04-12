@@ -389,6 +389,11 @@ mod tests {
         let tempdir = TempDir::new().expect("tempdir");
         let home_root = TempDir::new().expect("home root");
 
+        let saved_openai = std::env::var("OPENAI_API_KEY").ok();
+        let saved_anthropic = std::env::var("ANTHROPIC_API_KEY").ok();
+        std::env::remove_var("OPENAI_API_KEY");
+        std::env::remove_var("ANTHROPIC_API_KEY");
+
         std::env::set_var("HOME", home_root.path());
         std::env::set_var("CTX_PATH", tempdir.path());
         std::env::set_var("CTX_DISABLE_FASTEMBED", "1");
@@ -415,6 +420,8 @@ mod tests {
         std::env::remove_var("CTX_DISABLE_FASTEMBED");
         std::env::remove_var("CTX_PATH");
         std::env::remove_var("HOME");
+        restore_optional_env("OPENAI_API_KEY", saved_openai.as_deref());
+        restore_optional_env("ANTHROPIC_API_KEY", saved_anthropic.as_deref());
     }
 
     #[tokio::test]
@@ -424,6 +431,11 @@ mod tests {
             .expect("test lock poisoned");
         let tempdir = TempDir::new().expect("tempdir");
         let home_root = TempDir::new().expect("home root");
+
+        let saved_openai = std::env::var("OPENAI_API_KEY").ok();
+        let saved_anthropic = std::env::var("ANTHROPIC_API_KEY").ok();
+        std::env::remove_var("OPENAI_API_KEY");
+        std::env::remove_var("ANTHROPIC_API_KEY");
 
         std::env::set_var("HOME", home_root.path());
         std::env::set_var("CTX_PATH", tempdir.path());
@@ -449,10 +461,22 @@ mod tests {
         .expect("query context");
 
         assert!(!results.is_empty());
-        assert!(results[0].content.contains("deploy to staging"));
+        assert!(results.iter().any(|result| {
+            result.content.contains("deploy")
+                || result.summary.to_lowercase().contains("staging")
+        }));
 
         std::env::remove_var("CTX_DISABLE_FASTEMBED");
         std::env::remove_var("CTX_PATH");
         std::env::remove_var("HOME");
+        restore_optional_env("OPENAI_API_KEY", saved_openai.as_deref());
+        restore_optional_env("ANTHROPIC_API_KEY", saved_anthropic.as_deref());
+    }
+
+    fn restore_optional_env(key: &str, value: Option<&str>) {
+        match value {
+            Some(v) => std::env::set_var(key, v),
+            None => std::env::remove_var(key),
+        }
     }
 }

@@ -36,8 +36,13 @@ pub async fn extract_semantic(content: &str, source_hint: &str) -> Result<Semant
             Ok(extraction) => return Ok(extraction),
             Err(error) => warn_local_fallback_once(&error),
         }
-    } else if crate::models::llm::should_warn_unimplemented_cloud_backend() {
-        warn_cloud_backend_once();
+    } else if crate::models::llm::should_use_cloud_extraction() {
+        match extract_semantic_with_llm(content, source_hint).await {
+            Ok(extraction) => return Ok(extraction),
+            Err(error) => warn_cloud_extraction_fallback_once(&error),
+        }
+    } else if crate::models::llm::should_warn_missing_extraction_api_key() {
+        crate::models::llm::warn_missing_extraction_api_key_once();
     }
 
     Ok(extract_semantic_rules(content, source_hint))
@@ -120,12 +125,11 @@ fn warn_local_fallback_once(error: &anyhow::Error) {
     }
 }
 
-fn warn_cloud_backend_once() {
+fn warn_cloud_extraction_fallback_once(error: &anyhow::Error) {
     static WARNED: OnceLock<()> = OnceLock::new();
     if WARNED.set(()).is_ok() {
         eprintln!(
-            "ctx: {} extraction is not implemented yet. using heuristic semantic extraction.",
-            crate::models::llm::configured_backend_label()
+            "ctx: cloud extraction failed ({error}). falling back to heuristic semantic extraction."
         );
     }
 }

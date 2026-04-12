@@ -10,6 +10,7 @@ use crate::models::embeddings::{install_required_fastembed_assets, install_splad
 use crate::models::llm::ensure_local_extraction_model;
 
 const DEFAULT_EMBEDDING_MODEL: &str = "fastembed:all-MiniLM-L6-v2";
+const OPENAI_EMBEDDING_MODEL: &str = "openai:text-embedding-3-large";
 const DEFAULT_EXTRACTION_MODEL: &str = "openai:gpt-4o";
 const DEFAULT_ANTHROPIC_MODEL: &str = "anthropic:claude-sonnet-4-6";
 const DEFAULT_MODELS_DIR: &str = "~/.ctx/models";
@@ -207,6 +208,15 @@ pub fn ensure_local_setup(interactive: bool) -> Result<Config> {
             );
             config.extraction_model = preferred_model.into();
             changed = true;
+        }
+
+        if !had_config && matches!(backend, ApiKeyBackend::OpenAi) {
+            if config.embedding_model == default_embedding_model()
+                || config.embedding_model.starts_with("fastembed:")
+            {
+                config.embedding_model = OPENAI_EMBEDDING_MODEL.into();
+                changed = true;
+            }
         }
 
         if !had_config {

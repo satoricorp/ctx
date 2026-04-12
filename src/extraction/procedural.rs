@@ -33,8 +33,13 @@ pub async fn extract_procedural(content: &str, source_hint: &str) -> Result<Proc
             Ok(extraction) => return Ok(extraction),
             Err(error) => warn_local_fallback_once(&error),
         }
-    } else if crate::models::llm::should_warn_unimplemented_cloud_backend() {
-        warn_cloud_backend_once();
+    } else if crate::models::llm::should_use_cloud_extraction() {
+        match extract_procedural_with_llm(content).await {
+            Ok(extraction) => return Ok(extraction),
+            Err(error) => warn_cloud_extraction_fallback_once(&error),
+        }
+    } else if crate::models::llm::should_warn_missing_extraction_api_key() {
+        crate::models::llm::warn_missing_extraction_api_key_once();
     }
 
     Ok(extract_procedural_rules(content, source_hint))
@@ -105,12 +110,11 @@ fn warn_local_fallback_once(error: &anyhow::Error) {
     }
 }
 
-fn warn_cloud_backend_once() {
+fn warn_cloud_extraction_fallback_once(error: &anyhow::Error) {
     static WARNED: OnceLock<()> = OnceLock::new();
     if WARNED.set(()).is_ok() {
         eprintln!(
-            "ctx: {} extraction is not implemented yet. using heuristic procedural extraction.",
-            crate::models::llm::configured_backend_label()
+            "ctx: cloud procedural extraction failed ({error}). falling back to heuristic procedural extraction."
         );
     }
 }

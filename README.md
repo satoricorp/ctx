@@ -67,10 +67,10 @@ On the first **`ctx init`**, the CLI creates **`~/.ctx/config.json`** and aligns
 - Default local assets are warmed through **fastembed** (for example **`all-MiniLM-L6-v2`** and **`BGERerankerBase`**).
 - If you choose **`gemma4-e4b`** or **`gemma4-26b-a4b`** in a real terminal, `ctx` now preinstalls the matching GGUF model and uses embedded **`llama.cpp`** inference for semantic and procedural extraction.
 - Headless first-run setup keeps the chosen local extraction model in config, but defers the GGUF download until the first extraction request.
-- **`CTX_DISABLE_FASTEMBED=1`** skips FastEmbed downloads and keeps a deterministic dense fallback.
+- **`CTX_DISABLE_FASTEMBED=1`** skips FastEmbed downloads and keeps a deterministic dense fallback (for **`fastembed:`** embeddings only; OpenAI embeddings ignore this flag).
 - **`CTX_SKIP_LLAMA_DOWNLOAD=1`** disables automatic GGUF downloads and forces extraction to fall back to heuristics if the local model is missing.
 
-API-backed extraction is still not implemented yet, so **`openai:*`** and **`anthropic:*`** configurations currently fall back to heuristic extraction with a warning.
+**Cloud models:** With **`OPENAI_API_KEY`** set, **`openai:…`** extraction models use the OpenAI Chat Completions API (JSON responses). With **`ANTHROPIC_API_KEY`** set, **`anthropic:…`** models use the Anthropic Messages API. First-time setup with an OpenAI key also defaults **`embedding_model`** to **`openai:text-embedding-3-large`**; you can set **`embedding_model`** to **`openai:text-embedding-3-small`** or keep **`fastembed:…`** if you prefer. Switching embedding models after indexing a context requires re-indexing for consistent vector search.
 
 ---
 
