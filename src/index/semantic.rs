@@ -1,5 +1,6 @@
 use anyhow::Result;
 use chrono::Utc;
+use futures::stream::{self, StreamExt, TryStreamExt};
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
@@ -11,6 +12,19 @@ use crate::extraction::semantic::extract_semantic;
 use crate::models::embeddings::embed_dense;
 use crate::store::get_or_open_env;
 use crate::store::schema::{AddOutcome, ChunkRecord, EntityRecord, RelationRecord};
+
+/// Max concurrent per-chunk pipelines (semantic extraction + dense embed). Default `1` (same as
+/// the historical sequential loop). Set env `CTX_SEMANTIC_INGEST_CONCURRENCY` to overlap work
+/// (e.g. `8` for OpenAI; rate limits may apply). Local Gemma inference is globally serialized
+/// inside the LLM layer; higher concurrency can still overlap embedding with the next chunk.
+fn semantic_ingest_concurrency() -> usize {
+    const ENV: &str = "CTX_SEMANTIC_INGEST_CONCURRENCY";
+    std::env::var(ENV)
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1)
+        .clamp(1, 256)
+}
 
 #[derive(Debug, Clone)]
 pub struct SemanticIndexSummary {
@@ -46,15 +60,32 @@ pub async fn ingest_semantic_document(
         ));
     }
 
+    let concurrency = semantic_ingest_concurrency();
+    let source_owned = source_path.to_string();
+
+    let mut indexed: Vec<(usize, Chunk, crate::extraction::semantic::SemanticExtraction, Vec<f32>)> =
+        stream::iter(chunks.into_iter().enumerate())
+            .map(|(idx, chunk)| {
+                let source_owned = source_owned.clone();
+                async move {
+                    let extraction = extract_semantic(&chunk.index_text, &source_owned).await?;
+                    let embedding = embed_dense(&chunk.index_text).await?;
+                    Ok::<_, anyhow::Error>((idx, chunk, extraction, embedding))
+                }
+            })
+            .buffer_unordered(concurrency)
+            .try_collect()
+            .await?;
+
+    indexed.sort_by_key(|(idx, _, _, _)| *idx);
+
     let mut chunk_records = Vec::new();
     let mut entity_records = Vec::new();
     let mut relation_records = Vec::new();
     let mut summaries = Vec::new();
 
-    for chunk in chunks {
-        let extraction = extract_semantic(&chunk.index_text, source_path).await?;
+    for (_idx, chunk, extraction, embedding) in indexed {
         let chunk_id = Uuid::new_v4().to_string();
-        let embedding = embed_dense(&chunk.index_text).await?;
         summaries.push(extraction.summary.clone());
 
         chunk_records.push(ChunkRecord {
