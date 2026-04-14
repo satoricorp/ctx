@@ -106,14 +106,50 @@ fn parse_semantic_llm_output(raw: &str) -> Result<SemanticExtraction> {
     })
 }
 
+/// Find the first top-level JSON object in `raw` by matching `{` … `}` with nesting.
+/// Ignores braces inside double-quoted strings (with `\` escapes). Using `rfind('}')` is wrong
+/// when the model emits a `}` before the JSON (e.g. preamble or assistant prose), which used to
+/// panic with `begin <= end` when slicing.
 fn extract_json_object(raw: &str) -> Result<&str> {
     let start = raw
         .find('{')
         .ok_or_else(|| anyhow!("model output did not contain a JSON object start"))?;
-    let end = raw
-        .rfind('}')
-        .ok_or_else(|| anyhow!("model output did not contain a JSON object end"))?;
-    Ok(&raw[start..=end])
+
+    let bytes = raw.as_bytes();
+    let mut depth = 0i32;
+    let mut in_string = false;
+    let mut escape = false;
+
+    for i in start..raw.len() {
+        let b = bytes[i];
+
+        if in_string {
+            if escape {
+                escape = false;
+            } else if b == b'\\' {
+                escape = true;
+            } else if b == b'"' {
+                in_string = false;
+            }
+            continue;
+        }
+
+        match b {
+            b'"' => in_string = true,
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Ok(&raw[start..=i]);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Err(anyhow!(
+        "model output did not contain a balanced JSON object (opened at byte {start}, no matching `}}`)"
+    ))
 }
 
 fn warn_local_fallback_once(error: &anyhow::Error) {
@@ -249,5 +285,21 @@ mod tests {
         assert_eq!(parsed.summary, "AuthService uses RS256.");
         assert_eq!(parsed.entities.len(), 2);
         assert_eq!(parsed.triples[0].predicate, "uses");
+    }
+
+    #[test]
+    fn parses_json_when_closing_brace_appears_before_opening_in_preamble() {
+        let raw = r#"Sure. } here is JSON: {"summary":"ok","facts":[],"entities":[],"triples":[]}"#;
+        let json = extract_json_object(raw).expect("extract");
+        assert!(json.starts_with('{') && json.ends_with('}'));
+        let parsed = parse_semantic_llm_output(raw).expect("semantic json");
+        assert_eq!(parsed.summary, "ok");
+    }
+
+    #[test]
+    fn brace_in_json_string_does_not_end_object_early() {
+        let raw = r#"{"summary":"uses } in text","facts":[],"entities":[],"triples":[]}"#;
+        let parsed = parse_semantic_llm_output(raw).expect("semantic json");
+        assert_eq!(parsed.summary, "uses } in text");
     }
 }
