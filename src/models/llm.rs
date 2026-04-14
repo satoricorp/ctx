@@ -37,13 +37,13 @@ const LOCAL_MODEL_SPECS: &[LocalModelSpec] = &[
     LocalModelSpec {
         model_id: LOCAL_EXTRACTION_SMALL,
         file_name: "gemma-4-E4B-it-Q4_K_M.gguf",
-        url: "https://huggingface.co/ggml-org/gemma-4-E4B-it-GGUF/resolve/main/gemma-4-E4B-it-Q4_K_M.gguf?download=1",
+        url: "https://huggingface.co/ggml-org/gemma-4-E4B-it-GGUF/resolve/main/gemma-4-E4B-it-Q4_K_M.gguf?download=true",
         size_hint: "~3GB",
     },
     LocalModelSpec {
         model_id: LOCAL_EXTRACTION_LARGE,
         file_name: "gemma-4-26B-A4B-it-Q4_K_M.gguf",
-        url: "https://huggingface.co/ggml-org/gemma-4-26B-A4B-it-GGUF/resolve/main/gemma-4-26B-A4B-it-Q4_K_M.gguf?download=1",
+        url: "https://huggingface.co/ggml-org/gemma-4-26B-A4B-it-GGUF/resolve/main/gemma-4-26B-A4B-it-Q4_K_M.gguf?download=true",
         size_hint: "~8GB",
     },
 ];
