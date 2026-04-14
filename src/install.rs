@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -186,7 +186,14 @@ pub fn expand_tilde(path: &str) -> PathBuf {
     PathBuf::from(path)
 }
 
-pub fn ensure_local_setup(interactive: bool) -> Result<Config> {
+/// When `force_embedded_model_setup` is true (e.g. `ctx init --setup-models`), always run the
+/// embedded-model wizard and optional Gemma download — even if config already names a local model
+/// or `unconfigured`. Requires no OpenAI/Anthropic API key in the environment for this process.
+pub fn ensure_local_setup(
+    interactive: bool,
+    force_embedded_model_setup: bool,
+    assume_yes: bool,
+) -> Result<Config> {
     ensure_base_dirs()?;
 
     let path = config_path()?;
@@ -195,6 +202,19 @@ pub fn ensure_local_setup(interactive: bool) -> Result<Config> {
     normalize_config(&mut config);
 
     let tty_available = interactive && io::stdin().is_terminal() && io::stdout().is_terminal();
+
+    if force_embedded_model_setup {
+        if preferred_api_backend().is_some() {
+            bail!(
+                "embedded model setup needs API keys unset for this run. Example:\n  \
+                 env -u OPENAI_API_KEY -u ANTHROPIC_API_KEY ctx init --setup-models"
+            );
+        }
+        configure_embedded_models(&mut config, tty_available, assume_yes)?;
+        save_config(&config)?;
+        return Ok(config);
+    }
+
     let api_backend = preferred_api_backend();
     let mut changed = !had_config;
 
@@ -236,7 +256,7 @@ pub fn ensure_local_setup(interactive: bool) -> Result<Config> {
     }
 
     if needs_local_extraction_choice(&config) {
-        configure_embedded_models(&mut config, tty_available)?;
+        configure_embedded_models(&mut config, tty_available, assume_yes)?;
         save_config(&config)?;
         return Ok(config);
     }
@@ -248,8 +268,8 @@ pub fn ensure_local_setup(interactive: bool) -> Result<Config> {
     Ok(config)
 }
 
-pub fn ensure_model_choice() -> Result<()> {
-    ensure_local_setup(true).map(|_| ())
+pub fn ensure_model_choice(force_embedded_model_setup: bool, assume_yes: bool) -> Result<()> {
+    ensure_local_setup(true, force_embedded_model_setup, assume_yes).map(|_| ())
 }
 
 fn normalize_config(config: &mut Config) {
@@ -288,10 +308,16 @@ fn needs_local_extraction_choice(config: &Config) -> bool {
     )
 }
 
-fn configure_embedded_models(config: &mut Config, tty_available: bool) -> Result<()> {
+fn configure_embedded_models(
+    config: &mut Config,
+    tty_available: bool,
+    assume_yes: bool,
+) -> Result<()> {
     println!("ctx: no api keys found. setting up embedded models.\n");
 
     config.embedding_model = DEFAULT_EMBEDDING_MODEL.into();
+
+    let show_progress = tty_available || assume_yes;
 
     if fastembed_downloads_disabled() {
         println!(
@@ -302,29 +328,38 @@ fn configure_embedded_models(config: &mut Config, tty_available: bool) -> Result
         println!("downloading required models via fastembed:");
         println!("  all-MiniLM-L6-v2   86MB  (dense embedding, always required)");
         println!("  BGERerankerBase    86MB  (reranker, always required)");
-        maybe_install_required_models(config, tty_available);
+        maybe_install_required_models(config, show_progress);
         println!();
 
-        println!("optional: splade sparse retrieval (Splade_PP_en_v1, 532MB)");
-        println!("  bridges vocabulary gaps — \"login\" finds \"auth service\"");
-        let wants_splade = if tty_available {
-            prompt_yes_no("  install?", false)?
+        if assume_yes {
+            println!("ctx: --yes: skipping optional Splade (set splade manually if needed).");
+            config.splade_enabled = false;
         } else {
-            false
-        };
-        config.splade_enabled = if wants_splade {
-            maybe_install_splade_model(config, tty_available)
-        } else {
-            false
-        };
+            println!("optional: splade sparse retrieval (Splade_PP_en_v1, 532MB)");
+            println!("  bridges vocabulary gaps — \"login\" finds \"auth service\"");
+            let wants_splade = if tty_available {
+                prompt_yes_no("  install?", false)?
+            } else {
+                false
+            };
+            config.splade_enabled = if wants_splade {
+                maybe_install_splade_model(config, show_progress)
+            } else {
+                false
+            };
+        }
     }
 
     println!();
-    println!("no extraction model found.");
     let total_ram_gib = detected_ram_gib();
-    let choice = if tty_available {
+    let choice = if assume_yes {
+        println!("ctx: --yes: choosing recommended local extraction (gemma4-e4b when RAM ≥ 8GB).");
+        recommended_local_extraction_choice(total_ram_gib)
+    } else if tty_available {
+        println!("no extraction model found.");
         prompt_local_extraction(total_ram_gib)?
     } else {
+        println!("no extraction model found.");
         default_noninteractive_choice(total_ram_gib)
     };
 
@@ -334,8 +369,8 @@ fn configure_embedded_models(config: &mut Config, tty_available: bool) -> Result
         .into();
 
     if let Some(model_id) = choice.model_id() {
-        if tty_available {
-            maybe_install_local_extraction_model(model_id, true);
+        if tty_available || assume_yes {
+            maybe_install_local_extraction_model(model_id, show_progress);
         } else {
             eprintln!(
                 "ctx: local extraction model {} will download on first use. rerun `ctx init` in a terminal to preinstall it now.",
@@ -345,6 +380,19 @@ fn configure_embedded_models(config: &mut Config, tty_available: bool) -> Result
     }
 
     Ok(())
+}
+
+/// Same default as interactive option `[1]`: **gemma4-e4b** when there is enough RAM to run it.
+fn recommended_local_extraction_choice(total_ram_gib: u64) -> LocalExtractionChoice {
+    if total_ram_gib >= 8 {
+        LocalExtractionChoice::Gemma4E4B
+    } else {
+        eprintln!(
+            "ctx: detected ~{}GB RAM (<8GB). leaving extraction unconfigured; use a larger machine or set OPENAI_API_KEY / ANTHROPIC_API_KEY.",
+            total_ram_gib
+        );
+        LocalExtractionChoice::Skip
+    }
 }
 
 fn maybe_install_required_models(config: &Config, show_download_progress: bool) {
