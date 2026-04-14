@@ -36,8 +36,8 @@ struct LocalModelSpec {
 const LOCAL_MODEL_SPECS: &[LocalModelSpec] = &[
     LocalModelSpec {
         model_id: LOCAL_EXTRACTION_SMALL,
-        file_name: "gemma-4-e4b-it-Q4_K_M.gguf",
-        url: "https://huggingface.co/ggml-org/gemma-4-E4B-it-GGUF/resolve/main/gemma-4-e4b-it-Q4_K_M.gguf?download=1",
+        file_name: "gemma-4-E4B-it-Q4_K_M.gguf",
+        url: "https://huggingface.co/ggml-org/gemma-4-E4B-it-GGUF/resolve/main/gemma-4-E4B-it-Q4_K_M.gguf?download=1",
         size_hint: "~3GB",
     },
     LocalModelSpec {
@@ -609,6 +609,6 @@ mod tests {
     fn local_model_paths_live_under_models_dir() {
         let path = local_model_path(LOCAL_EXTRACTION_SMALL, Path::new("/tmp/models"))
             .expect("local model path");
-        assert!(path.ends_with("gemma-4-e4b-it-Q4_K_M.gguf"));
+        assert!(path.ends_with("gemma-4-E4B-it-Q4_K_M.gguf"));
     }
 }
