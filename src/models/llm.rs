@@ -6,6 +6,7 @@ use llama_cpp_2::llama_batch::LlamaBatch;
 use llama_cpp_2::model::params::LlamaModelParams;
 use llama_cpp_2::model::{AddBos, LlamaModel};
 use llama_cpp_2::sampling::LlamaSampler;
+use indicatif::{ProgressBar, ProgressStyle};
 use reqwest::blocking::Client;
 use std::collections::HashMap;
 use std::fs;
@@ -282,13 +283,6 @@ fn ensure_local_extraction_model_for_config(
         );
     }
 
-    if show_progress {
-        println!(
-            "ctx: downloading local extraction model {} ({})",
-            spec.model_id, spec.size_hint
-        );
-    }
-
     download_model(spec, &path, show_progress)?;
     Ok(path)
 }
@@ -331,10 +325,14 @@ fn download_model(spec: LocalModelSpec, destination: &Path, show_progress: bool)
     let tmp_path = destination.with_extension("gguf.part");
     let mut file = fs::File::create(&tmp_path)
         .with_context(|| format!("failed to create {}", tmp_path.display()))?;
-    let mut downloaded = 0_u64;
     let mut buffer = [0_u8; 1024 * 1024];
     let total = response.content_length();
-    let mut last_reported_mb = 0_u64;
+
+    let progress = if show_progress {
+        Some(gemma_download_progress_bar(&spec, total))
+    } else {
+        None
+    };
 
     loop {
         let read = response
@@ -345,22 +343,8 @@ fn download_model(spec: LocalModelSpec, destination: &Path, show_progress: bool)
         }
         file.write_all(&buffer[..read])
             .with_context(|| format!("failed writing {}", tmp_path.display()))?;
-        downloaded += read as u64;
-
-        if show_progress {
-            let downloaded_mb = downloaded / (1024 * 1024);
-            if downloaded_mb >= last_reported_mb + 256 {
-                last_reported_mb = downloaded_mb;
-                if let Some(total) = total {
-                    let total_mb = total / (1024 * 1024);
-                    println!(
-                        "ctx: downloaded {} MB / {} MB for {}",
-                        downloaded_mb, total_mb, spec.model_id
-                    );
-                } else {
-                    println!("ctx: downloaded {} MB for {}", downloaded_mb, spec.model_id);
-                }
-            }
+        if let Some(pb) = &progress {
+            pb.inc(read as u64);
         }
     }
 
@@ -374,14 +358,46 @@ fn download_model(spec: LocalModelSpec, destination: &Path, show_progress: bool)
         )
     })?;
 
-    if show_progress {
-        println!(
+    if let Some(pb) = progress {
+        pb.finish_with_message(format!(
             "ctx: local extraction model ready at {}",
             destination.display()
-        );
+        ));
     }
 
     Ok(())
+}
+
+/// Progress bar for GGUF downloads (known size from `Content-Length`, or bytes + spinner if unknown).
+fn gemma_download_progress_bar(spec: &LocalModelSpec, total: Option<u64>) -> ProgressBar {
+    let label = format!("{} ({})", spec.model_id, spec.size_hint);
+    match total.filter(|&n| n > 0) {
+        Some(total) => {
+            let pb = ProgressBar::new(total);
+            pb.set_style(
+                ProgressStyle::with_template(
+                    "{msg}\n{spinner:.cyan} [{elapsed_precise}] [{wide_bar:.white/blue}] \
+                     {bytes:>10} / {total_bytes:>10}  {decimal_bytes_per_sec:>14}  {eta}",
+                )
+                .expect("progress template")
+                .progress_chars("=>-"),
+            );
+            pb.set_message(format!("ctx: downloading {label}"));
+            pb
+        }
+        None => {
+            let pb = ProgressBar::new_spinner();
+            pb.set_style(
+                ProgressStyle::with_template(
+                    "{spinner:.cyan} [{elapsed_precise}] {bytes:>10}  {decimal_bytes_per_sec:>14}  {msg}",
+                )
+                .expect("spinner template"),
+            );
+            pb.set_message(format!("ctx: downloading {label} (size unknown)"));
+            pb.enable_steady_tick(std::time::Duration::from_millis(120));
+            pb
+        }
+    }
 }
 
 fn run_llama_completion(

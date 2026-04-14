@@ -22,6 +22,7 @@ futures = "0.3"
 fastembed = { version = "5.13.2", default-features = false, features = ["ort-download-binaries-native-tls", "hf-hub-native-tls"] }
 # crates.io helix-db failed to compile cleanly here; track upstream until a fixed release lands.
 helix-db = { git = "https://github.com/HelixDB/helix-db", default-features = false, features = ["server"] }
+indicatif = "0.17"
 llama-cpp-2 = "0.1.138"
 open = "5"
 regex = "1"

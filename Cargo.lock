@@ -580,6 +580,7 @@ dependencies = [
  "fastembed",
  "futures",
  "helix-db",
+ "indicatif",
  "llama-cpp-2",
  "open",
  "regex",
