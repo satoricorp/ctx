@@ -13,6 +13,8 @@ use std::io::{Read, Write};
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, Once, OnceLock};
+
+static LOCAL_LLAMA_INFERENCE_LOCK: Mutex<()> = Mutex::new(());
 use std::time::Instant;
 
 use crate::install::{load_config, resolve_models_dir, Config};
@@ -159,6 +161,10 @@ fn complete_json_sync(prompt: &str) -> Result<String> {
     }
 
     let model_path = ensure_local_extraction_model_for_config(&config, model, false)?;
+    // llama.cpp contexts must not decode concurrently on the same model; keep completions serial.
+    let _guard = LOCAL_LLAMA_INFERENCE_LOCK
+        .lock()
+        .map_err(|_| anyhow!("local llama inference lock poisoned"))?;
     run_llama_completion(&model_path, prompt, runtime_config_from_env())
 }
 
@@ -288,16 +294,39 @@ fn ensure_local_extraction_model_for_config(
 }
 
 fn download_model(spec: LocalModelSpec, destination: &Path, show_progress: bool) -> Result<()> {
+    // Large GGUFs take a long time; reqwest's default timeout is too short for multi‑GB files.
+    const DOWNLOAD_TIMEOUT: std::time::Duration =
+        std::time::Duration::from_secs(7 * 24 * 3600);
     let client = Client::builder()
         .user_agent("ctx/0.1")
+        .timeout(DOWNLOAD_TIMEOUT)
         .build()
         .context("failed to build download client")?;
-    let mut response = client
+    let response = client
         .get(spec.url)
         .send()
-        .with_context(|| format!("failed to start download for {}", spec.model_id))?
-        .error_for_status()
-        .with_context(|| format!("download failed for {}", spec.model_id))?;
+        .with_context(|| {
+            format!(
+                "failed to connect for {} (URL {})",
+                spec.model_id, spec.url
+            )
+        })?;
+
+    let status = response.status();
+    let mut response = if !status.is_success() {
+        let err_text = response
+            .text()
+            .unwrap_or_else(|e| format!("(could not read error body: {e})"));
+        bail!(
+            "HTTP {} downloading {} — {}\n{}",
+            status.as_u16(),
+            spec.model_id,
+            spec.url,
+            err_text.chars().take(1200).collect::<String>()
+        );
+    } else {
+        response
+    };
 
     let tmp_path = destination.with_extension("gguf.part");
     let mut file = fs::File::create(&tmp_path)
