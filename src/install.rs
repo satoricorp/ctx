@@ -11,7 +11,7 @@ use crate::models::llm::ensure_local_extraction_model;
 
 const DEFAULT_EMBEDDING_MODEL: &str = "fastembed:all-MiniLM-L6-v2";
 const OPENAI_EMBEDDING_MODEL: &str = "openai:text-embedding-3-large";
-const DEFAULT_EXTRACTION_MODEL: &str = "openai:gpt-4o";
+const DEFAULT_EXTRACTION_MODEL: &str = "openai:gpt-5.4-nano";
 const DEFAULT_ANTHROPIC_MODEL: &str = "anthropic:claude-sonnet-4-6";
 const DEFAULT_MODELS_DIR: &str = "~/.ctx/models";
 const LOCAL_EXTRACTION_SMALL: &str = "gemma4-e4b";

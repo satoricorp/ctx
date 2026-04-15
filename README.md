@@ -61,7 +61,7 @@ Other useful commands:
 
 On the first **`ctx init`**, the CLI creates **`~/.ctx/config.json`** and aligns the local model cache with your environment:
 
-- If **`OPENAI_API_KEY`** is set, config prefers **`openai:gpt-4o`** for extraction.
+- If **`OPENAI_API_KEY`** is set, config prefers **`openai:gpt-5.4-nano`** for extraction (Chat Completions with **`reasoning_effort: low`** for speed).
 - If **`ANTHROPIC_API_KEY`** is set, config prefers **`anthropic:claude-sonnet-4-6`** for extraction.
 - Otherwise, you are prompted for the local extraction tier and optional SPLADE setup.
 - Default local assets are warmed through **fastembed** (for example **`all-MiniLM-L6-v2`** and **`BGERerankerBase`**).

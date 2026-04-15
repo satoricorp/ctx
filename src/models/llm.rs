@@ -64,7 +64,7 @@ pub async fn complete_json(prompt: &str) -> Result<String> {
 pub fn configured_extraction_model() -> String {
     load_config()
         .map(|config| config.extraction_model)
-        .unwrap_or_else(|_| String::from("openai:gpt-4o"))
+        .unwrap_or_else(|_| String::from("openai:gpt-5.4-nano"))
 }
 
 pub fn should_use_local_llm() -> bool {
@@ -169,6 +169,12 @@ fn complete_json_sync(prompt: &str) -> Result<String> {
     run_llama_completion(&model_path, prompt, runtime_config_from_env())
 }
 
+/// GPT-5 family models use `reasoning_effort` + `max_completion_tokens` and do not accept `temperature`
+/// alongside reasoning settings on Chat Completions. Older chat models keep `max_tokens` + `temperature`.
+fn openai_chat_uses_reasoning_fields(model: &str) -> bool {
+    model.to_ascii_lowercase().contains("gpt-5")
+}
+
 fn openai_chat_json(prompt: &str, model: &str) -> Result<String> {
     let api_key = std::env::var("OPENAI_API_KEY").map_err(|_| {
         anyhow!("OPENAI_API_KEY is not set (required for extraction model openai:{model})")
@@ -179,13 +185,23 @@ fn openai_chat_json(prompt: &str, model: &str) -> Result<String> {
         .build()
         .context("failed to build HTTP client for OpenAI")?;
 
-    let body = serde_json::json!({
-        "model": model,
-        "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": 4096,
-        "temperature": 0.2,
-        "response_format": {"type": "json_object"},
-    });
+    let body = if openai_chat_uses_reasoning_fields(model) {
+        serde_json::json!({
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_completion_tokens": 4096,
+            "reasoning_effort": "low",
+            "response_format": {"type": "json_object"},
+        })
+    } else {
+        serde_json::json!({
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": 4096,
+            "temperature": 0.2,
+            "response_format": {"type": "json_object"},
+        })
+    };
 
     let response = client
         .post("https://api.openai.com/v1/chat/completions")

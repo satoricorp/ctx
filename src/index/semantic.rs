@@ -13,16 +13,15 @@ use crate::models::embeddings::embed_dense;
 use crate::store::get_or_open_env;
 use crate::store::schema::{AddOutcome, ChunkRecord, EntityRecord, RelationRecord};
 
-/// Max concurrent per-chunk pipelines (semantic extraction + dense embed). Default `1` (same as
-/// the historical sequential loop). Set env `CTX_SEMANTIC_INGEST_CONCURRENCY` to overlap work
-/// (e.g. `8` for OpenAI; rate limits may apply). Local Gemma inference is globally serialized
-/// inside the LLM layer; higher concurrency can still overlap embedding with the next chunk.
+/// Max concurrent per-chunk pipelines (semantic extraction + dense embed). Default `4` to overlap
+/// cloud extraction calls (tune with `CTX_SEMANTIC_INGEST_CONCURRENCY`; use `1` if you hit rate limits).
+/// Local Gemma inference is globally serialized inside the LLM layer.
 fn semantic_ingest_concurrency() -> usize {
     const ENV: &str = "CTX_SEMANTIC_INGEST_CONCURRENCY";
     std::env::var(ENV)
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(1)
+        .unwrap_or(4)
         .clamp(1, 256)
 }
 

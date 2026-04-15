@@ -44,7 +44,7 @@ impl Manifest {
             created: Utc::now(),
             config: ManifestConfig {
                 splade_enabled: true,
-                extraction_model: "openai:gpt-4o".into(),
+                extraction_model: "openai:gpt-5.4-nano".into(),
                 embedding_model: "fastembed:all-MiniLM-L6-v2".into(),
             },
             entries: Vec::new(),
