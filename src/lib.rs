@@ -505,6 +505,7 @@ async fn add_file_buffer(
             r#type: chosen_layer.to_string(),
             blob_ref: entry_blob_ref,
             source_path: source_path_str,
+            extra: Default::default(),
         });
     }
     manifest.save(ctx_path)?;
@@ -755,6 +756,7 @@ pub fn refresh_aura_registry(ctx_path: &Path, manifest: &mut Manifest) -> Result
             path: rel_str,
             hash,
             updated_at,
+            extra: Default::default(),
         });
     }
 
