@@ -33,6 +33,7 @@ pub struct ContextStatus {
     pub extraction_model: String,
     pub embedding_model: String,
     pub splade_enabled: bool,
+    pub drifted_files: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, Default)]

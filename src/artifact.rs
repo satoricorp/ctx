@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 pub use manifest::{Manifest, ManifestConfig, ManifestEntry};
 
-/// Base directory for context stores (`CTX_PATH` or `~/.ctx/contexts`), before **CTX_IMAGE** scoping.
+/// Base directory for context stores (`CTX_PATH` or `~/.ctx/contexts`).
 pub fn context_root_base() -> PathBuf {
     if let Ok(dir) = std::env::var("CTX_PATH") {
         return PathBuf::from(dir);
@@ -19,16 +19,10 @@ pub fn context_root_base() -> PathBuf {
         .join("contexts")
 }
 
-/// Effective contexts directory: **`context_root_base()`**, or **`…/images/<CTX_IMAGE>/`** when set.
+/// Effective contexts directory. Per spec §11 this is always the base; **CTX_IMAGE** scoping
+/// happens at the artifact-name level in [`context_path`], not via an `images/` subdirectory.
 pub fn context_root() -> PathBuf {
-    let base = context_root_base();
-    if let Ok(image) = std::env::var("CTX_IMAGE") {
-        let tag = image.trim();
-        if !tag.is_empty() {
-            return base.join("images").join(sanitize_image_segment(tag));
-        }
-    }
-    base
+    context_root_base()
 }
 
 fn sanitize_image_segment(tag: &str) -> String {
@@ -43,8 +37,14 @@ fn sanitize_image_segment(tag: &str) -> String {
         .collect()
 }
 
+/// Resolve the artifact directory for a named context. When **CTX_IMAGE** is set (and non-empty),
+/// the image tag replaces `name`, producing `…/contexts/<tag>.ctx`.
 pub fn context_path(name: &str) -> PathBuf {
-    context_root().join(format!("{}.ctx", name))
+    let effective = match std::env::var("CTX_IMAGE") {
+        Ok(tag) if !tag.trim().is_empty() => sanitize_image_segment(tag.trim()),
+        _ => name.to_string(),
+    };
+    context_root().join(format!("{}.ctx", effective))
 }
 
 pub fn index_path(ctx_path: &Path) -> PathBuf {
@@ -57,6 +57,10 @@ pub fn manifest_path(ctx_path: &Path) -> PathBuf {
 
 pub fn blobs_path(ctx_path: &Path) -> PathBuf {
     ctx_path.join("blobs").join("sha256")
+}
+
+pub fn aura_path(ctx_path: &Path) -> PathBuf {
+    ctx_path.join("aura")
 }
 
 pub fn infer_context_name() -> Result<String> {

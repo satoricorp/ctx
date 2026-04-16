@@ -50,6 +50,17 @@ pub struct AddResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QueryResponse {
     pub results: Vec<crate::retrieval::query::QueryResult>,
+    pub aura: AuraSummaryResponse,
+    pub drift_detected: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub drift_hint: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AuraSummaryResponse {
+    pub index: Option<String>,
+    pub aura: Option<String>,
+    pub topics: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -87,6 +98,8 @@ pub struct StatusResponse {
     pub embedding_model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub splade_enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub drifted_files: Option<Vec<String>>,
 }
 
 pub fn router() -> Router {
@@ -127,7 +140,22 @@ pub async fn query_handler(
     .await
     .map_err(internal_error)?;
 
-    Ok(Json(QueryResponse { results }))
+    let ctx_path = crate::open_existing_context(&request.ctx).map_err(internal_error)?;
+    let summary = crate::read_aura_summary(&ctx_path).map_err(internal_error)?;
+    let drift = crate::drift_state(&ctx_path).map_err(internal_error)?;
+
+    Ok(Json(QueryResponse {
+        results,
+        aura: AuraSummaryResponse {
+            index: summary.index,
+            aura: summary.aura,
+            topics: summary.topics,
+        },
+        drift_detected: drift.drift_detected,
+        drift_hint: drift
+            .drift_detected
+            .then(|| crate::DRIFT_HINT.to_string()),
+    }))
 }
 
 pub async fn record_handler(
@@ -169,6 +197,7 @@ pub async fn status_handler(
             extraction_model: Some(status.extraction_model),
             embedding_model: Some(status.embedding_model),
             splade_enabled: Some(status.splade_enabled),
+            drifted_files: Some(status.drifted_files),
         }));
     }
 
@@ -185,6 +214,7 @@ pub async fn status_handler(
         extraction_model: None,
         embedding_model: None,
         splade_enabled: None,
+        drifted_files: None,
     }))
 }
 

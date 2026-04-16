@@ -13,10 +13,13 @@ use rmcp::{
 
 use crate::extraction::classifier::ContentLayer;
 use crate::mcp::tools::{
-    AddToolInput, AddToolOutput, QueryToolInput, QueryToolOutput, RecordToolInput, RecordToolOutput,
+    AddToolInput, AddToolOutput, AuraReadToolInput, AuraReadToolOutput, AuraSummaryDto,
+    AuraWriteToolInput, AuraWriteToolOutput, QueryToolInput, QueryToolOutput, RecordToolInput,
+    RecordToolOutput,
 };
 use crate::retrieval::query::QueryType;
 use crate::store::schema::RecordProcedureInput;
+use crate::AuraWriteMode;
 
 #[derive(Debug, Clone)]
 pub struct CtxMcpServer {
@@ -73,7 +76,22 @@ impl CtxMcpServer {
         .await
         .map_err(internal_error)?;
 
-        Ok(Json(QueryToolOutput { results }))
+        let ctx_path = crate::open_existing_context(&input.ctx).map_err(internal_error)?;
+        let summary = crate::read_aura_summary(&ctx_path).map_err(internal_error)?;
+        let drift = crate::drift_state(&ctx_path).map_err(internal_error)?;
+
+        Ok(Json(QueryToolOutput {
+            results,
+            aura: AuraSummaryDto {
+                index: summary.index,
+                aura: summary.aura,
+                topics: summary.topics,
+            },
+            drift_detected: drift.drift_detected,
+            drift_hint: drift
+                .drift_detected
+                .then(|| crate::DRIFT_HINT.to_string()),
+        }))
     }
 
     #[tool(
@@ -98,6 +116,37 @@ impl CtxMcpServer {
         .map_err(internal_error)?;
 
         Ok(Json(RecordToolOutput { id }))
+    }
+
+    #[tool(name = "ctx_aura_read", description = "read an aura file from a context")]
+    pub async fn ctx_aura_read(
+        &self,
+        Parameters(input): Parameters<AuraReadToolInput>,
+    ) -> Result<Json<AuraReadToolOutput>, ErrorData> {
+        let ctx_path = crate::open_existing_context(&input.ctx).map_err(internal_error)?;
+        let content = crate::read_aura_file(&ctx_path, &input.path).map_err(internal_error)?;
+        Ok(Json(AuraReadToolOutput {
+            path: content.path,
+            content: content.content,
+            hash: content.hash,
+        }))
+    }
+
+    #[tool(
+        name = "ctx_aura_write",
+        description = "write or append to an aura file in a context"
+    )]
+    pub async fn ctx_aura_write(
+        &self,
+        Parameters(input): Parameters<AuraWriteToolInput>,
+    ) -> Result<Json<AuraWriteToolOutput>, ErrorData> {
+        let mode = AuraWriteMode::parse(input.mode.as_deref()).map_err(internal_error)?;
+        let outcome = crate::write_aura_file(&input.ctx, &input.path, &input.content, mode)
+            .map_err(internal_error)?;
+        Ok(Json(AuraWriteToolOutput {
+            path: outcome.path,
+            hash: outcome.hash,
+        }))
     }
 }
 

@@ -39,5 +39,12 @@ pub async fn run(args: StatusArgs) -> Result<()> {
             "disabled"
         }
     );
+    if !status.drifted_files.is_empty() {
+        println!("drifted:");
+        for path in &status.drifted_files {
+            println!("  {}", path);
+        }
+        println!("hint: run `ctx update` to re-index");
+    }
     Ok(())
 }
