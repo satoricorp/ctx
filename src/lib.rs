@@ -87,6 +87,7 @@ pub async fn add_to_context(
     context: &str,
     path: &Path,
     layer: Option<ContentLayer>,
+    with_content: bool,
 ) -> Result<AddOutcome> {
     let ctx_path = ensure_context_for_add(context)?;
     let abs = path
@@ -108,7 +109,8 @@ pub async fn add_to_context(
             let content = fs::read_to_string(entry_path).with_context(|| {
                 format!("failed to read {} as utf-8 text", entry_path.display())
             })?;
-            let outcome = add_file_buffer(&ctx_path, &root, &rel, &content, layer).await?;
+            let outcome =
+                add_file_buffer(&ctx_path, &root, &rel, &content, layer, with_content).await?;
             total.chunks_written += outcome.chunks_written;
             total.entities_written += outcome.entities_written;
         }
@@ -122,7 +124,7 @@ pub async fn add_to_context(
     let rel = PathBuf::from(abs.file_name().context("file without a name")?);
     let content = fs::read_to_string(&abs)
         .with_context(|| format!("failed to read {} as utf-8 text", abs.display()))?;
-    add_file_buffer(&ctx_path, &root, &rel, &content, layer).await
+    add_file_buffer(&ctx_path, &root, &rel, &content, layer, with_content).await
 }
 
 pub async fn add_content_to_context(
@@ -151,6 +153,7 @@ pub async fn query_context(
 pub async fn update_context(context: &str) -> Result<ContextStatus> {
     let ctx_path = open_existing_context(context)?;
     let manifest = Manifest::load(&ctx_path)?;
+    let with_content = manifest.config.store_raw_content;
 
     let targets: Vec<(PathBuf, PathBuf, Option<ContentLayer>)> = manifest
         .sources
@@ -172,7 +175,7 @@ pub async fn update_context(context: &str) -> Result<ContextStatus> {
         }
         let content = fs::read_to_string(&abs)
             .with_context(|| format!("failed to read {} as utf-8 text", abs.display()))?;
-        add_file_buffer(&ctx_path, &root, &rel, &content, layer).await?;
+        add_file_buffer(&ctx_path, &root, &rel, &content, layer, with_content).await?;
     }
 
     let mut manifest = Manifest::load(&ctx_path)?;
@@ -282,7 +285,7 @@ async fn bootstrap_procedural(context: &str) -> Result<()> {
     for file_name in BOOTSTRAP_FILES {
         let path = cwd.join(file_name);
         if path.exists() {
-            add_to_context(context, &path, Some(ContentLayer::Procedural)).await?;
+            add_to_context(context, &path, Some(ContentLayer::Procedural), false).await?;
         }
     }
     Ok(())
@@ -295,6 +298,7 @@ async fn add_file_buffer(
     rel_path: &Path,
     content: &str,
     layer: Option<ContentLayer>,
+    with_content: bool,
 ) -> Result<AddOutcome> {
     let source_hash = hash_bytes(content.as_bytes());
     let root_str = root.display().to_string();
@@ -304,14 +308,33 @@ async fn add_file_buffer(
     let mut manifest = Manifest::load(ctx_path)?;
     sync_manifest_config(&mut manifest)?;
 
+    let raw_enabled = manifest.config.store_raw_content || with_content;
+
     if let Some(entry) = manifest.entry_for_mut(&root_str, &rel_str) {
-        if entry.hash_at_index == source_hash {
+        if entry.hash_at_index == source_hash && (!raw_enabled || entry.blob_ref.is_some()) {
             return Ok(AddOutcome::default());
         }
     }
 
-    let (chunk_count, entity_count) =
-        ingest_into_store(ctx_path, &source_id, content, layer, rel_path).await?;
+    let hash_match = manifest
+        .entry_for_mut(&root_str, &rel_str)
+        .map(|entry| entry.hash_at_index == source_hash)
+        .unwrap_or(false);
+
+    let (chunk_count, entity_count) = if hash_match {
+        (0, 0)
+    } else {
+        ingest_into_store(ctx_path, &source_id, content, layer, rel_path).await?
+    };
+
+    let mut entry_blob_ref: Option<String> = None;
+    if raw_enabled {
+        let written = artifact::blob::write_blob(ctx_path, content.as_bytes())?;
+        entry_blob_ref = Some(written.blob_hash);
+        if !manifest.config.store_raw_content {
+            manifest.config.store_raw_content = true;
+        }
+    }
 
     let chosen_layer = layer.unwrap_or_else(|| classify_content(rel_path, content));
     let indexed_at = Utc::now();
@@ -321,7 +344,7 @@ async fn add_file_buffer(
         entry.hash_at_index = source_hash;
         entry.indexed_at = indexed_at;
         entry.r#type = chosen_layer.to_string();
-        entry.blob_ref = None;
+        entry.blob_ref = entry_blob_ref;
     } else {
         source.files.push(ManifestEntry {
             path: rel_str,
@@ -329,7 +352,7 @@ async fn add_file_buffer(
             hash_at_index: source_hash,
             indexed_at,
             r#type: chosen_layer.to_string(),
-            blob_ref: None,
+            blob_ref: entry_blob_ref,
         });
     }
     manifest.save(ctx_path)?;
@@ -990,6 +1013,7 @@ mod tests {
             "drift-manifest",
             &file_path,
             Some(ContentLayer::Semantic),
+            false,
         )
         .await
         .expect("add to context");
@@ -1029,7 +1053,7 @@ mod tests {
         let file_path = src_dir.path().join("note.md");
         fs::write(&file_path, "original content").expect("write src");
 
-        add_to_context("drift-status", &file_path, Some(ContentLayer::Semantic))
+        add_to_context("drift-status", &file_path, Some(ContentLayer::Semantic), false)
             .await
             .expect("add to context");
 
@@ -1074,7 +1098,7 @@ mod tests {
         let file_path = src_dir.path().join("note.md");
         fs::write(&file_path, "AuthService uses RS256 tokens.").expect("write src");
 
-        add_to_context("drift-query", &file_path, Some(ContentLayer::Semantic))
+        add_to_context("drift-query", &file_path, Some(ContentLayer::Semantic), false)
             .await
             .expect("add to context");
 
@@ -1102,7 +1126,7 @@ mod tests {
         let file_path = src_dir.path().join("note.md");
         fs::write(&file_path, "initial").expect("write src");
 
-        add_to_context("drift-update", &file_path, Some(ContentLayer::Semantic))
+        add_to_context("drift-update", &file_path, Some(ContentLayer::Semantic), false)
             .await
             .expect("add to context");
 
@@ -1159,5 +1183,152 @@ mod tests {
             .find(|entry| entry.path == "aura/index.md")
             .expect("index entry after refresh");
         assert_ne!(after.hash, before_hash);
+    }
+
+    fn count_blobs(ctx_path: &Path) -> usize {
+        let dir = artifact::blobs_path(ctx_path);
+        if !dir.exists() {
+            return 0;
+        }
+        fs::read_dir(&dir)
+            .expect("read blobs dir")
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_type().map(|ft| ft.is_file()).unwrap_or(false))
+            .count()
+    }
+
+    #[tokio::test]
+    async fn add_with_content_writes_blob_and_flips_config() {
+        let _guard = crate::test_support::env_lock()
+            .lock()
+            .expect("test lock poisoned");
+        let _env = setup_aura_env();
+
+        init_context("blob-add").await.expect("init context");
+        let ctx_path = open_existing_context("blob-add").expect("open context");
+
+        let src_dir = TempDir::new().expect("src dir");
+        let file_path = src_dir.path().join("note.md");
+        fs::write(&file_path, "raw content body").expect("write src");
+
+        add_to_context("blob-add", &file_path, Some(ContentLayer::Semantic), true)
+            .await
+            .expect("add with content");
+
+        let manifest = Manifest::load(&ctx_path).expect("load manifest");
+        assert!(manifest.config.store_raw_content);
+
+        let entry = manifest
+            .sources
+            .first()
+            .and_then(|source| source.files.first())
+            .expect("entry");
+        let blob_ref = entry.blob_ref.as_deref().expect("blob ref populated");
+        assert!(blob_ref.starts_with("sha256:"));
+
+        let blob_path = artifact::blobs_path(&ctx_path)
+            .join(blob_ref.trim_start_matches("sha256:"));
+        assert!(blob_path.exists(), "blob file {} missing", blob_path.display());
+    }
+
+    #[tokio::test]
+    async fn add_without_with_content_leaves_blob_unset() {
+        let _guard = crate::test_support::env_lock()
+            .lock()
+            .expect("test lock poisoned");
+        let _env = setup_aura_env();
+
+        init_context("blob-default").await.expect("init context");
+        let ctx_path = open_existing_context("blob-default").expect("open context");
+
+        let src_dir = TempDir::new().expect("src dir");
+        let file_path = src_dir.path().join("note.md");
+        fs::write(&file_path, "hash only body").expect("write src");
+
+        add_to_context("blob-default", &file_path, Some(ContentLayer::Semantic), false)
+            .await
+            .expect("add without content");
+
+        let manifest = Manifest::load(&ctx_path).expect("load manifest");
+        assert!(!manifest.config.store_raw_content);
+        let entry = manifest
+            .sources
+            .first()
+            .and_then(|source| source.files.first())
+            .expect("entry");
+        assert!(entry.blob_ref.is_none());
+        assert_eq!(count_blobs(&ctx_path), 0);
+    }
+
+    #[tokio::test]
+    async fn add_dedupe_writes_blob_once() {
+        let _guard = crate::test_support::env_lock()
+            .lock()
+            .expect("test lock poisoned");
+        let _env = setup_aura_env();
+
+        init_context("blob-dedupe").await.expect("init context");
+        let ctx_path = open_existing_context("blob-dedupe").expect("open context");
+
+        let src_dir = TempDir::new().expect("src dir");
+        let body = "identical bytes across files";
+        let a = src_dir.path().join("a.md");
+        let b = src_dir.path().join("b.md");
+        fs::write(&a, body).expect("write a");
+        fs::write(&b, body).expect("write b");
+
+        add_to_context("blob-dedupe", &a, Some(ContentLayer::Semantic), true)
+            .await
+            .expect("add a");
+        add_to_context("blob-dedupe", &b, Some(ContentLayer::Semantic), true)
+            .await
+            .expect("add b");
+
+        assert_eq!(count_blobs(&ctx_path), 1);
+    }
+
+    #[tokio::test]
+    async fn update_writes_new_blob_on_drift() {
+        let _guard = crate::test_support::env_lock()
+            .lock()
+            .expect("test lock poisoned");
+        let _env = setup_aura_env();
+
+        init_context("blob-drift").await.expect("init context");
+        let ctx_path = open_existing_context("blob-drift").expect("open context");
+
+        let src_dir = TempDir::new().expect("src dir");
+        let file_path = src_dir.path().join("note.md");
+        fs::write(&file_path, "initial body").expect("write src");
+
+        add_to_context("blob-drift", &file_path, Some(ContentLayer::Semantic), true)
+            .await
+            .expect("add with content");
+
+        let manifest_before = Manifest::load(&ctx_path).expect("load manifest");
+        let blob_before = manifest_before
+            .sources
+            .first()
+            .and_then(|source| source.files.first())
+            .and_then(|entry| entry.blob_ref.clone())
+            .expect("blob_ref before");
+
+        fs::write(&file_path, "mutated body").expect("mutate src");
+        update_context("blob-drift").await.expect("update");
+
+        let manifest_after = Manifest::load(&ctx_path).expect("reload manifest");
+        let blob_after = manifest_after
+            .sources
+            .first()
+            .and_then(|source| source.files.first())
+            .and_then(|entry| entry.blob_ref.clone())
+            .expect("blob_ref after");
+
+        assert_ne!(blob_before, blob_after, "expected new blob_ref after drift");
+        assert_eq!(
+            count_blobs(&ctx_path),
+            2,
+            "old blob MUST remain (blobs are immutable, no GC)"
+        );
     }
 }
