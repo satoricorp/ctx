@@ -4,7 +4,8 @@
 //! unit per page; [`XlsxDecoder`] produces one unit per worksheet; [`HtmlDecoder`] strips HTML
 //! markup; [`JupyterDecoder`] extracts markdown + source cells from `.ipynb`;
 //! [`RtfDecoder`] flattens RTF to plain text; [`DocxDecoder`] extracts body text from Word
-//! documents; [`PlainTextDecoder`] is the fallback that passes UTF-8 files through unchanged.
+//! documents; [`PptxDecoder`] produces one unit per slide; [`PlainTextDecoder`] is the fallback
+//! that passes UTF-8 files through unchanged.
 
 use anyhow::{anyhow, Context, Result};
 use calamine::{Data, Range, Reader};
@@ -406,6 +407,13 @@ fn read_zip_entry(zip_bytes: &[u8], entry_name: &str) -> Result<String> {
     let cursor = Cursor::new(zip_bytes);
     let mut archive =
         zip::ZipArchive::new(cursor).map_err(|err| anyhow!("zip open failed: {err}"))?;
+    read_zip_entry_in(&mut archive, entry_name)
+}
+
+fn read_zip_entry_in<R: Read + std::io::Seek>(
+    archive: &mut zip::ZipArchive<R>,
+    entry_name: &str,
+) -> Result<String> {
     let mut file = archive
         .by_name(entry_name)
         .map_err(|err| anyhow!("zip entry {entry_name} not found: {err}"))?;
@@ -494,12 +502,68 @@ fn local_name_eq(qualified: &[u8], local: &[u8]) -> bool {
     stripped == local
 }
 
+/// PowerPoint `.pptx` decoder. Produces one [`DecodedUnit`] per slide rendered from
+/// `ppt/slides/slideN.xml`. Slides are ordered by their filename index (`slide1.xml`,
+/// `slide2.xml`, …). This matches the visible order for presentations that have never been
+/// reordered through the UI; reordered decks will still surface every slide's content but may
+/// present it in creation rather than display order.
+pub struct PptxDecoder;
+
+impl Decoder for PptxDecoder {
+    fn can_decode(&self, path: &Path, _bytes: &[u8]) -> bool {
+        matches_extension(path, &["pptx", "pptm"])
+    }
+
+    fn decode(&self, path: &Path, bytes: &[u8]) -> Result<Vec<DecodedUnit>> {
+        let cursor = Cursor::new(bytes);
+        let mut archive = zip::ZipArchive::new(cursor)
+            .map_err(|err| anyhow!("pptx zip open failed for {}: {err}", path.display()))?;
+
+        let mut slides: Vec<(u32, String)> = archive
+            .file_names()
+            .filter_map(|name| parse_slide_index(name).map(|idx| (idx, name.to_string())))
+            .collect();
+        slides.sort_by_key(|(idx, _)| *idx);
+
+        let pad_width = page_pad_width(slides.len());
+        let mut units: Vec<DecodedUnit> = Vec::new();
+        for (idx, name) in &slides {
+            let xml = read_zip_entry_in(&mut archive, name).with_context(|| {
+                format!("reading {} from {}", name, path.display())
+            })?;
+            let text = extract_docx_text(&xml).with_context(|| {
+                format!("parsing {} from {}", name, path.display())
+            })?;
+            if text.trim().is_empty() {
+                continue;
+            }
+            units.push(DecodedUnit {
+                virtual_path: PathBuf::from(format!(
+                    "slide-{:0>width$}.md",
+                    idx,
+                    width = pad_width,
+                )),
+                text,
+            });
+        }
+        Ok(units)
+    }
+}
+
+/// Parse `ppt/slides/slideN.xml` → `Some(N)`; anything else returns None.
+fn parse_slide_index(entry_name: &str) -> Option<u32> {
+    let stem = entry_name.strip_prefix("ppt/slides/slide")?;
+    let digits = stem.strip_suffix(".xml")?;
+    digits.parse().ok()
+}
+
 static PDF: PdfDecoder = PdfDecoder;
 static XLSX: XlsxDecoder = XlsxDecoder;
 static HTML: HtmlDecoder = HtmlDecoder;
 static JUPYTER: JupyterDecoder = JupyterDecoder;
 static RTF: RtfDecoder = RtfDecoder;
 static DOCX: DocxDecoder = DocxDecoder;
+static PPTX: PptxDecoder = PptxDecoder;
 static PLAIN_TEXT: PlainTextDecoder = PlainTextDecoder;
 static DECODERS: &[&dyn Decoder] = &[
     &PDF,
@@ -508,6 +572,7 @@ static DECODERS: &[&dyn Decoder] = &[
     &JUPYTER,
     &RTF,
     &DOCX,
+    &PPTX,
     &PLAIN_TEXT,
 ];
 
@@ -711,6 +776,23 @@ mod tests {
         assert!(local_name_eq(b"t", b"t"));
         assert!(local_name_eq(b"a:tab", b"tab"));
         assert!(!local_name_eq(b"w:t", b"p"));
+    }
+
+    #[test]
+    fn pptx_decoder_claims_by_extension() {
+        assert!(PptxDecoder.can_decode(Path::new("deck.pptx"), b""));
+        assert!(PptxDecoder.can_decode(Path::new("deck.PPTM"), b""));
+        assert!(!PptxDecoder.can_decode(Path::new("deck.ppt"), b""));
+        assert!(!PptxDecoder.can_decode(Path::new("report.docx"), b""));
+    }
+
+    #[test]
+    fn parse_slide_index_handles_common_names() {
+        assert_eq!(parse_slide_index("ppt/slides/slide1.xml"), Some(1));
+        assert_eq!(parse_slide_index("ppt/slides/slide42.xml"), Some(42));
+        assert_eq!(parse_slide_index("ppt/slides/_rels/slide1.xml.rels"), None);
+        assert_eq!(parse_slide_index("ppt/slideLayouts/slideLayout1.xml"), None);
+        assert_eq!(parse_slide_index("ppt/slides/slide.xml"), None);
     }
 
     #[test]
