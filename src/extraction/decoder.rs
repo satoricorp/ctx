@@ -1,9 +1,12 @@
 //! File decoding: bytes → one or more `DecodedUnit`s of UTF-8 text.
 //!
 //! A single source file may expand into multiple indexable units. [`PdfDecoder`] produces one
-//! unit per page; [`PlainTextDecoder`] is the fallback that passes UTF-8 files through unchanged.
+//! unit per page; [`XlsxDecoder`] produces one unit per worksheet; [`PlainTextDecoder`] is the
+//! fallback that passes UTF-8 files through unchanged.
 
 use anyhow::{anyhow, Result};
+use calamine::{Data, Range, Reader};
+use std::io::Cursor;
 use std::path::{Path, PathBuf};
 
 /// One decoded text unit extracted from a source file.
@@ -86,9 +89,132 @@ fn page_pad_width(total: usize) -> usize {
     }
 }
 
+/// Per-worksheet spreadsheet decoding via [`calamine`]. Handles xlsx, xlsm, xlsb, xls, and ods.
+/// Each non-empty sheet becomes a [`DecodedUnit`] rendered as a minimal markdown table so the
+/// existing prose-oriented chunker can split large sheets along row boundaries.
+pub struct XlsxDecoder;
+
+const SPREADSHEET_EXTENSIONS: &[&str] = &["xlsx", "xlsm", "xlsb", "xls", "ods"];
+
+impl Decoder for XlsxDecoder {
+    fn can_decode(&self, path: &Path, _bytes: &[u8]) -> bool {
+        path.extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| {
+                SPREADSHEET_EXTENSIONS
+                    .iter()
+                    .any(|known| ext.eq_ignore_ascii_case(known))
+            })
+            .unwrap_or(false)
+    }
+
+    fn decode(&self, path: &Path, bytes: &[u8]) -> Result<Vec<DecodedUnit>> {
+        let cursor = Cursor::new(bytes.to_vec());
+        let mut workbook = calamine::open_workbook_auto_from_rs(cursor)
+            .map_err(|err| anyhow!("spreadsheet open failed for {}: {err}", path.display()))?;
+
+        let names: Vec<String> = workbook.sheet_names().to_vec();
+        let pad_width = page_pad_width(names.len());
+
+        let mut units: Vec<DecodedUnit> = Vec::new();
+        for (idx, name) in names.iter().enumerate() {
+            let range = workbook.worksheet_range(name).map_err(|err| {
+                anyhow!(
+                    "spreadsheet read failed for {} sheet {}: {err}",
+                    path.display(),
+                    name
+                )
+            })?;
+            let text = format_sheet_markdown(name, &range);
+            if text.trim().is_empty() {
+                continue;
+            }
+            let virtual_path = PathBuf::from(format!(
+                "sheet-{:0>width$}-{name}.md",
+                idx + 1,
+                width = pad_width,
+                name = sanitize_sheet_name(name),
+            ));
+            units.push(DecodedUnit { virtual_path, text });
+        }
+        Ok(units)
+    }
+}
+
+fn sanitize_sheet_name(name: &str) -> String {
+    let mut out: String = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    out = out.trim_matches('_').to_string();
+    if out.is_empty() {
+        out.push('_');
+    }
+    if out.len() > 60 {
+        out.truncate(60);
+    }
+    out
+}
+
+fn format_sheet_markdown(name: &str, range: &Range<Data>) -> String {
+    let rows: Vec<Vec<String>> = range
+        .rows()
+        .map(|row| row.iter().map(format_cell).collect())
+        .collect();
+    let max_cols = rows.iter().map(|row| row.len()).max().unwrap_or(0);
+    if max_cols == 0 {
+        return String::new();
+    }
+
+    let mut out = format!("# Sheet: {name}\n\n");
+    let header = &rows[0];
+    out.push_str(&render_row(header, max_cols));
+    out.push_str(&render_separator(max_cols));
+    for row in rows.iter().skip(1) {
+        out.push_str(&render_row(row, max_cols));
+    }
+    out
+}
+
+fn format_cell(cell: &Data) -> String {
+    match cell {
+        Data::Empty => String::new(),
+        other => other.to_string(),
+    }
+}
+
+fn render_row(cells: &[String], max_cols: usize) -> String {
+    let mut out = String::from("|");
+    for i in 0..max_cols {
+        let value = cells.get(i).map(String::as_str).unwrap_or("");
+        let escaped = value.replace('|', "\\|").replace('\n', " ");
+        out.push(' ');
+        out.push_str(&escaped);
+        out.push_str(" |");
+    }
+    out.push('\n');
+    out
+}
+
+fn render_separator(max_cols: usize) -> String {
+    let mut out = String::from("|");
+    for _ in 0..max_cols {
+        out.push_str(" --- |");
+    }
+    out.push('\n');
+    out
+}
+
 static PDF: PdfDecoder = PdfDecoder;
+static XLSX: XlsxDecoder = XlsxDecoder;
 static PLAIN_TEXT: PlainTextDecoder = PlainTextDecoder;
-static DECODERS: &[&dyn Decoder] = &[&PDF, &PLAIN_TEXT];
+static DECODERS: &[&dyn Decoder] = &[&PDF, &XLSX, &PLAIN_TEXT];
 
 /// Dispatch `(path, bytes)` to the first registered decoder that accepts it.
 pub fn decode_file(path: &Path, bytes: &[u8]) -> Result<Vec<DecodedUnit>> {
@@ -135,6 +261,40 @@ mod tests {
     fn pdf_decoder_rejects_non_pdf() {
         assert!(!PdfDecoder.can_decode(Path::new("note.md"), b"# hello"));
         assert!(!PdfDecoder.can_decode(Path::new("data.bin"), &[0x00, 0x01, 0x02]));
+    }
+
+    #[test]
+    fn xlsx_decoder_claims_supported_extensions() {
+        for ext in ["xlsx", "XLSX", "xlsm", "xlsb", "xls", "ods"] {
+            let path = format!("book.{ext}");
+            assert!(
+                XlsxDecoder.can_decode(Path::new(&path), b""),
+                "should accept {ext}"
+            );
+        }
+    }
+
+    #[test]
+    fn xlsx_decoder_rejects_other_extensions() {
+        assert!(!XlsxDecoder.can_decode(Path::new("notes.md"), b""));
+        assert!(!XlsxDecoder.can_decode(Path::new("report.pdf"), b""));
+        assert!(!XlsxDecoder.can_decode(Path::new("no-ext"), b""));
+    }
+
+    #[test]
+    fn sanitize_sheet_name_replaces_unsafe_chars() {
+        assert_eq!(sanitize_sheet_name("Revenue 2025"), "Revenue_2025");
+        assert_eq!(sanitize_sheet_name("A/B:C"), "A_B_C");
+        assert_eq!(sanitize_sheet_name("___"), "_");
+        assert_eq!(sanitize_sheet_name(""), "_");
+        assert_eq!(sanitize_sheet_name("plain"), "plain");
+    }
+
+    #[test]
+    fn render_row_pads_and_escapes() {
+        let row = vec!["a".to_string(), "b|c".to_string()];
+        let rendered = render_row(&row, 3);
+        assert_eq!(rendered, "| a | b\\|c |  |\n");
     }
 
     #[test]
