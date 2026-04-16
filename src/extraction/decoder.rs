@@ -2,7 +2,8 @@
 //!
 //! A single source file may expand into multiple indexable units. [`PdfDecoder`] produces one
 //! unit per page; [`XlsxDecoder`] produces one unit per worksheet; [`HtmlDecoder`] strips HTML
-//! markup; [`PlainTextDecoder`] is the fallback that passes UTF-8 files through unchanged.
+//! markup; [`JupyterDecoder`] extracts markdown + source cells from `.ipynb`;
+//! [`PlainTextDecoder`] is the fallback that passes UTF-8 files through unchanged.
 
 use anyhow::{anyhow, Result};
 use calamine::{Data, Range, Reader};
@@ -261,11 +262,82 @@ fn looks_like_html(bytes: &[u8]) -> bool {
         || prefix_lower.starts_with(b"<?xml")
 }
 
+/// Jupyter notebook (`.ipynb`) decoder. Extracts the ordered sequence of `markdown`, `code`, and
+/// `raw` cells and drops outputs (base64 images, execution counts, and ANSI spew) so retrieval
+/// sees what the author wrote, not what the kernel printed. Code cells are fenced with the
+/// kernel's declared language (defaults to plaintext) so LLMs can parse them correctly.
+pub struct JupyterDecoder;
+
+impl Decoder for JupyterDecoder {
+    fn can_decode(&self, path: &Path, _bytes: &[u8]) -> bool {
+        path.extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext.eq_ignore_ascii_case("ipynb"))
+            .unwrap_or(false)
+    }
+
+    fn decode(&self, path: &Path, bytes: &[u8]) -> Result<Vec<DecodedUnit>> {
+        let notebook: serde_json::Value = serde_json::from_slice(bytes).map_err(|err| {
+            anyhow!("notebook json parse failed for {}: {err}", path.display())
+        })?;
+
+        let default_language = notebook
+            .pointer("/metadata/kernelspec/language")
+            .and_then(serde_json::Value::as_str)
+            .or_else(|| {
+                notebook
+                    .pointer("/metadata/language_info/name")
+                    .and_then(serde_json::Value::as_str)
+            })
+            .unwrap_or("")
+            .to_string();
+
+        let cells = notebook
+            .get("cells")
+            .and_then(serde_json::Value::as_array)
+            .ok_or_else(|| anyhow!("notebook {} has no cells array", path.display()))?;
+
+        let mut sections: Vec<String> = Vec::new();
+        for cell in cells {
+            let kind = cell.get("cell_type").and_then(|v| v.as_str()).unwrap_or("");
+            let source = read_notebook_source(cell.get("source"));
+            if source.trim().is_empty() {
+                continue;
+            }
+            match kind {
+                "markdown" | "raw" => sections.push(source),
+                "code" => sections.push(format!("```{default_language}\n{source}\n```")),
+                _ => {}
+            }
+        }
+
+        if sections.is_empty() {
+            return Ok(Vec::new());
+        }
+        Ok(vec![DecodedUnit {
+            virtual_path: PathBuf::new(),
+            text: sections.join("\n\n"),
+        }])
+    }
+}
+
+fn read_notebook_source(value: Option<&serde_json::Value>) -> String {
+    match value {
+        Some(serde_json::Value::String(s)) => s.clone(),
+        Some(serde_json::Value::Array(parts)) => parts
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .collect::<String>(),
+        _ => String::new(),
+    }
+}
+
 static PDF: PdfDecoder = PdfDecoder;
 static XLSX: XlsxDecoder = XlsxDecoder;
 static HTML: HtmlDecoder = HtmlDecoder;
+static JUPYTER: JupyterDecoder = JupyterDecoder;
 static PLAIN_TEXT: PlainTextDecoder = PlainTextDecoder;
-static DECODERS: &[&dyn Decoder] = &[&PDF, &XLSX, &HTML, &PLAIN_TEXT];
+static DECODERS: &[&dyn Decoder] = &[&PDF, &XLSX, &HTML, &JUPYTER, &PLAIN_TEXT];
 
 /// Dispatch `(path, bytes)` to the first registered decoder that accepts it.
 pub fn decode_file(path: &Path, bytes: &[u8]) -> Result<Vec<DecodedUnit>> {
@@ -376,6 +448,42 @@ mod tests {
         assert!(text.contains("Hi"), "missing heading: {text:?}");
         assert!(text.contains("bold"), "missing emphasized word: {text:?}");
         assert!(!text.contains("<h1>"), "tags leaked: {text:?}");
+    }
+
+    #[test]
+    fn jupyter_decoder_keeps_markdown_and_code_drops_outputs() {
+        let bytes = br##"{
+            "cells": [
+                {"cell_type": "markdown", "source": ["# Title\n", "intro para\n"]},
+                {"cell_type": "code", "source": "print('hi')\n",
+                 "outputs": [{"output_type":"stream","text":"hi\n"}]},
+                {"cell_type": "raw", "source": "raw line"},
+                {"cell_type": "code", "source": ""}
+            ],
+            "metadata": {"kernelspec": {"language": "python"}}
+        }"##;
+        let units = decode_file(Path::new("nb.ipynb"), bytes).expect("decode ipynb");
+        assert_eq!(units.len(), 1);
+        let text = &units[0].text;
+        assert!(text.contains("# Title"), "missing markdown: {text}");
+        assert!(text.contains("```python"), "missing code fence: {text}");
+        assert!(text.contains("print('hi')"), "missing source: {text}");
+        assert!(text.contains("raw line"), "missing raw cell: {text}");
+        assert!(
+            !text.contains("output_type"),
+            "leaked outputs metadata: {text}"
+        );
+    }
+
+    #[test]
+    fn jupyter_decoder_falls_back_when_language_missing() {
+        let bytes = br##"{
+            "cells": [{"cell_type":"code","source":"x=1\n"}],
+            "metadata": {}
+        }"##;
+        let units = decode_file(Path::new("nb.ipynb"), bytes).expect("decode");
+        assert_eq!(units.len(), 1);
+        assert!(units[0].text.starts_with("```\n"), "{}", units[0].text);
     }
 
     #[test]
