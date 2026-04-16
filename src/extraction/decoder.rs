@@ -3,7 +3,8 @@
 //! A single source file may expand into multiple indexable units. [`PdfDecoder`] produces one
 //! unit per page; [`XlsxDecoder`] produces one unit per worksheet; [`HtmlDecoder`] strips HTML
 //! markup; [`JupyterDecoder`] extracts markdown + source cells from `.ipynb`;
-//! [`PlainTextDecoder`] is the fallback that passes UTF-8 files through unchanged.
+//! [`RtfDecoder`] flattens RTF to plain text; [`PlainTextDecoder`] is the fallback that passes
+//! UTF-8 files through unchanged.
 
 use anyhow::{anyhow, Result};
 use calamine::{Data, Range, Reader};
@@ -332,12 +333,42 @@ fn read_notebook_source(value: Option<&serde_json::Value>) -> String {
     }
 }
 
+/// Rich Text Format (`.rtf`) decoder via [`rtf_parser`]. RTF is ASCII-compatible with escape
+/// sequences for non-ASCII glyphs, so we interpret bytes as UTF-8 (lossy) and return the
+/// flattened plain-text body with formatting stripped.
+pub struct RtfDecoder;
+
+impl Decoder for RtfDecoder {
+    fn can_decode(&self, path: &Path, bytes: &[u8]) -> bool {
+        let ext_matches = path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext.eq_ignore_ascii_case("rtf"))
+            .unwrap_or(false);
+        ext_matches || bytes.starts_with(br"{\rtf")
+    }
+
+    fn decode(&self, _path: &Path, bytes: &[u8]) -> Result<Vec<DecodedUnit>> {
+        let rtf = String::from_utf8_lossy(bytes).into_owned();
+        let document = rtf_parser::document::parse_rtf(rtf);
+        let text = document.get_text();
+        if text.trim().is_empty() {
+            return Ok(Vec::new());
+        }
+        Ok(vec![DecodedUnit {
+            virtual_path: PathBuf::new(),
+            text,
+        }])
+    }
+}
+
 static PDF: PdfDecoder = PdfDecoder;
 static XLSX: XlsxDecoder = XlsxDecoder;
 static HTML: HtmlDecoder = HtmlDecoder;
 static JUPYTER: JupyterDecoder = JupyterDecoder;
+static RTF: RtfDecoder = RtfDecoder;
 static PLAIN_TEXT: PlainTextDecoder = PlainTextDecoder;
-static DECODERS: &[&dyn Decoder] = &[&PDF, &XLSX, &HTML, &JUPYTER, &PLAIN_TEXT];
+static DECODERS: &[&dyn Decoder] = &[&PDF, &XLSX, &HTML, &JUPYTER, &RTF, &PLAIN_TEXT];
 
 /// Dispatch `(path, bytes)` to the first registered decoder that accepts it.
 pub fn decode_file(path: &Path, bytes: &[u8]) -> Result<Vec<DecodedUnit>> {
@@ -484,6 +515,25 @@ mod tests {
         let units = decode_file(Path::new("nb.ipynb"), bytes).expect("decode");
         assert_eq!(units.len(), 1);
         assert!(units[0].text.starts_with("```\n"), "{}", units[0].text);
+    }
+
+    #[test]
+    fn rtf_decoder_claims_by_extension_and_magic() {
+        assert!(RtfDecoder.can_decode(Path::new("note.rtf"), b""));
+        assert!(RtfDecoder.can_decode(Path::new("NOTE.RTF"), b""));
+        assert!(RtfDecoder.can_decode(Path::new("no-ext"), br"{\rtf1\ansi hi}"));
+        assert!(!RtfDecoder.can_decode(Path::new("note.md"), b"# hi"));
+    }
+
+    #[test]
+    fn rtf_decoder_extracts_plain_text() {
+        let rtf = br"{\rtf1\ansi\deff0 {\fonttbl{\f0 Times;}}\b hello\b0  world.}";
+        let units = decode_file(Path::new("note.rtf"), rtf).expect("decode rtf");
+        assert_eq!(units.len(), 1);
+        let text = &units[0].text;
+        assert!(text.contains("hello"), "missing bold word: {text:?}");
+        assert!(text.contains("world"), "missing plain word: {text:?}");
+        assert!(!text.contains("\\b"), "formatting leaked: {text:?}");
     }
 
     #[test]
