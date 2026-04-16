@@ -17,7 +17,9 @@ axum = { version = "0.8", features = ["json"] }
 calamine = "0.34"
 chrono = { version = "0.4", features = ["serde"] }
 html2text = "0.16"
+quick-xml = "0.39"
 rtf-parser = "0.4"
+zip = { version = "8", default-features = false, features = ["deflate"] }
 clap = { version = "4.5", features = ["derive"] }
 dirs = "5"
 encoding_rs = "0.8.35"

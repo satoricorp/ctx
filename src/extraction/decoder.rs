@@ -3,12 +3,14 @@
 //! A single source file may expand into multiple indexable units. [`PdfDecoder`] produces one
 //! unit per page; [`XlsxDecoder`] produces one unit per worksheet; [`HtmlDecoder`] strips HTML
 //! markup; [`JupyterDecoder`] extracts markdown + source cells from `.ipynb`;
-//! [`RtfDecoder`] flattens RTF to plain text; [`PlainTextDecoder`] is the fallback that passes
-//! UTF-8 files through unchanged.
+//! [`RtfDecoder`] flattens RTF to plain text; [`DocxDecoder`] extracts body text from Word
+//! documents; [`PlainTextDecoder`] is the fallback that passes UTF-8 files through unchanged.
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use calamine::{Data, Range, Reader};
-use std::io::Cursor;
+use quick_xml::events::Event;
+use quick_xml::reader::Reader as XmlReader;
+use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 
 /// One decoded text unit extracted from a source file.
@@ -362,13 +364,152 @@ impl Decoder for RtfDecoder {
     }
 }
 
+/// Word `.docx` decoder. Reads `word/document.xml` out of the OOXML zip and walks it with
+/// [`quick_xml`] to extract body text from `<w:t>` runs while turning `<w:p>` and `<w:br>`
+/// into line breaks. Ignores headers, footers, footnotes, comments, and styling metadata.
+pub struct DocxDecoder;
+
+impl Decoder for DocxDecoder {
+    fn can_decode(&self, path: &Path, _bytes: &[u8]) -> bool {
+        matches_extension(path, &["docx", "docm"])
+    }
+
+    fn decode(&self, path: &Path, bytes: &[u8]) -> Result<Vec<DecodedUnit>> {
+        let xml = read_zip_entry(bytes, "word/document.xml").with_context(|| {
+            format!("reading word/document.xml from {}", path.display())
+        })?;
+        let text = extract_docx_text(&xml)
+            .with_context(|| format!("parsing word/document.xml from {}", path.display()))?;
+        if text.trim().is_empty() {
+            return Ok(Vec::new());
+        }
+        Ok(vec![DecodedUnit {
+            virtual_path: PathBuf::new(),
+            text,
+        }])
+    }
+}
+
+fn matches_extension(path: &Path, allowed: &[&str]) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| {
+            allowed
+                .iter()
+                .any(|known| ext.eq_ignore_ascii_case(known))
+        })
+        .unwrap_or(false)
+}
+
+/// Read a single file by exact name out of a zip archive in memory.
+fn read_zip_entry(zip_bytes: &[u8], entry_name: &str) -> Result<String> {
+    let cursor = Cursor::new(zip_bytes);
+    let mut archive =
+        zip::ZipArchive::new(cursor).map_err(|err| anyhow!("zip open failed: {err}"))?;
+    let mut file = archive
+        .by_name(entry_name)
+        .map_err(|err| anyhow!("zip entry {entry_name} not found: {err}"))?;
+    let mut contents = String::new();
+    file.read_to_string(&mut contents)
+        .map_err(|err| anyhow!("zip entry {entry_name} read failed: {err}"))?;
+    Ok(contents)
+}
+
+/// Pull text out of a DOCX `word/document.xml`. `<w:p>` paragraphs and `<w:br>` breaks become
+/// line breaks; `<w:tab>` becomes a tab; text nodes inside `<w:t>` are concatenated verbatim.
+fn extract_docx_text(xml: &str) -> Result<String> {
+    let mut reader = XmlReader::from_str(xml);
+    reader.config_mut().trim_text(false);
+    let mut out = String::new();
+    let mut in_text = false;
+    let mut buf = Vec::new();
+    loop {
+        match reader
+            .read_event_into(&mut buf)
+            .map_err(|err| anyhow!("docx xml parse error: {err}"))?
+        {
+            Event::Start(ref e) => {
+                if local_name_eq(e.name().as_ref(), b"t") {
+                    in_text = true;
+                }
+            }
+            Event::End(ref e) => {
+                if local_name_eq(e.name().as_ref(), b"t") {
+                    in_text = false;
+                } else if local_name_eq(e.name().as_ref(), b"p") {
+                    out.push('\n');
+                }
+            }
+            Event::Empty(ref e) => {
+                let name = e.name();
+                if local_name_eq(name.as_ref(), b"br") {
+                    out.push('\n');
+                } else if local_name_eq(name.as_ref(), b"tab") {
+                    out.push('\t');
+                }
+            }
+            Event::Text(e) if in_text => {
+                let decoded = e
+                    .xml_content()
+                    .map_err(|err| anyhow!("docx text decode: {err}"))?;
+                out.push_str(&decoded);
+            }
+            Event::GeneralRef(e) if in_text => {
+                if let Some(resolved) = resolve_general_ref(&e) {
+                    out.push_str(&resolved);
+                }
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+        buf.clear();
+    }
+    Ok(out)
+}
+
+/// Resolve the five predefined XML entities and numeric character references. Unknown named
+/// entities are dropped silently (Word never emits custom entities in document.xml).
+fn resolve_general_ref(e: &quick_xml::events::BytesRef<'_>) -> Option<String> {
+    if let Ok(Some(ch)) = e.resolve_char_ref() {
+        return Some(ch.to_string());
+    }
+    let name = e.decode().ok()?;
+    match name.as_ref() {
+        "amp" => Some("&".into()),
+        "lt" => Some("<".into()),
+        "gt" => Some(">".into()),
+        "quot" => Some("\"".into()),
+        "apos" => Some("'".into()),
+        _ => None,
+    }
+}
+
+/// Match an XML qualified name against an unqualified local name, ignoring any namespace prefix.
+fn local_name_eq(qualified: &[u8], local: &[u8]) -> bool {
+    let stripped = qualified
+        .iter()
+        .rposition(|b| *b == b':')
+        .map(|i| &qualified[i + 1..])
+        .unwrap_or(qualified);
+    stripped == local
+}
+
 static PDF: PdfDecoder = PdfDecoder;
 static XLSX: XlsxDecoder = XlsxDecoder;
 static HTML: HtmlDecoder = HtmlDecoder;
 static JUPYTER: JupyterDecoder = JupyterDecoder;
 static RTF: RtfDecoder = RtfDecoder;
+static DOCX: DocxDecoder = DocxDecoder;
 static PLAIN_TEXT: PlainTextDecoder = PlainTextDecoder;
-static DECODERS: &[&dyn Decoder] = &[&PDF, &XLSX, &HTML, &JUPYTER, &RTF, &PLAIN_TEXT];
+static DECODERS: &[&dyn Decoder] = &[
+    &PDF,
+    &XLSX,
+    &HTML,
+    &JUPYTER,
+    &RTF,
+    &DOCX,
+    &PLAIN_TEXT,
+];
 
 /// Dispatch `(path, bytes)` to the first registered decoder that accepts it.
 pub fn decode_file(path: &Path, bytes: &[u8]) -> Result<Vec<DecodedUnit>> {
@@ -534,6 +675,42 @@ mod tests {
         assert!(text.contains("hello"), "missing bold word: {text:?}");
         assert!(text.contains("world"), "missing plain word: {text:?}");
         assert!(!text.contains("\\b"), "formatting leaked: {text:?}");
+    }
+
+    #[test]
+    fn docx_decoder_claims_by_extension() {
+        assert!(DocxDecoder.can_decode(Path::new("report.docx"), b""));
+        assert!(DocxDecoder.can_decode(Path::new("MACRO.DOCM"), b""));
+        assert!(!DocxDecoder.can_decode(Path::new("report.doc"), b""));
+        assert!(!DocxDecoder.can_decode(Path::new("page.html"), b""));
+    }
+
+    #[test]
+    fn docx_text_extraction_joins_runs_and_breaks_paragraphs() {
+        let xml = r#"<?xml version="1.0"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p><w:r><w:t>Hello </w:t><w:t>world.</w:t></w:r></w:p>
+    <w:p><w:r><w:t>Line A</w:t><w:br/><w:t>Line B</w:t></w:r></w:p>
+    <w:p><w:r><w:t>Tab</w:t><w:tab/><w:t>sep</w:t></w:r></w:p>
+    <w:p><w:r><w:t xml:space="preserve">With &amp; entity</w:t></w:r></w:p>
+  </w:body>
+</w:document>"#;
+        let text = extract_docx_text(xml).expect("parse");
+        assert!(text.contains("Hello world."), "runs not joined: {text:?}");
+        assert!(text.contains("Line A\nLine B"), "br not line break: {text:?}");
+        assert!(text.contains("Tab\tsep"), "tab missing: {text:?}");
+        assert!(text.contains("With & entity"), "entity not decoded: {text:?}");
+        let paragraphs = text.split('\n').filter(|s| !s.trim().is_empty()).count();
+        assert!(paragraphs >= 4, "paragraphs not split: {text:?}");
+    }
+
+    #[test]
+    fn local_name_eq_ignores_prefix() {
+        assert!(local_name_eq(b"w:t", b"t"));
+        assert!(local_name_eq(b"t", b"t"));
+        assert!(local_name_eq(b"a:tab", b"tab"));
+        assert!(!local_name_eq(b"w:t", b"p"));
     }
 
     #[test]
