@@ -1,8 +1,7 @@
 //! File decoding: bytes → one or more `DecodedUnit`s of UTF-8 text.
 //!
-//! A single source file may expand into multiple indexable units (e.g. future PDF page decoders,
-//! spreadsheet sheet decoders, or archive entry decoders). Step 1 ships with only the fallback
-//! [`PlainTextDecoder`], which preserves the pre-existing `fs::read_to_string` behavior.
+//! A single source file may expand into multiple indexable units. [`PdfDecoder`] produces one
+//! unit per page; [`PlainTextDecoder`] is the fallback that passes UTF-8 files through unchanged.
 
 use anyhow::{anyhow, Result};
 use std::path::{Path, PathBuf};
@@ -41,8 +40,55 @@ impl Decoder for PlainTextDecoder {
     }
 }
 
+/// Per-page PDF text extraction via [`pdf_extract`]. Produces one [`DecodedUnit`] per page
+/// with a stable, zero-padded `page-NNN.txt` virtual path so chunk ordering and drift
+/// resolution remain deterministic across re-ingests. Whitespace-only pages are dropped
+/// while their 1-based page numbers are preserved in the remaining units' virtual paths.
+pub struct PdfDecoder;
+
+impl Decoder for PdfDecoder {
+    fn can_decode(&self, path: &Path, bytes: &[u8]) -> bool {
+        let ext_is_pdf = path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext.eq_ignore_ascii_case("pdf"))
+            .unwrap_or(false);
+        ext_is_pdf || bytes.starts_with(b"%PDF-")
+    }
+
+    fn decode(&self, path: &Path, bytes: &[u8]) -> Result<Vec<DecodedUnit>> {
+        let pages = pdf_extract::extract_text_from_mem_by_pages(bytes)
+            .map_err(|err| anyhow!("pdf text extraction failed for {}: {err}", path.display()))?;
+
+        let pad_width = page_pad_width(pages.len());
+        Ok(pages
+            .into_iter()
+            .enumerate()
+            .filter(|(_, text)| !text.trim().is_empty())
+            .map(|(idx, text)| DecodedUnit {
+                virtual_path: PathBuf::from(format!(
+                    "page-{:0>width$}.txt",
+                    idx + 1,
+                    width = pad_width,
+                )),
+                text,
+            })
+            .collect())
+    }
+}
+
+fn page_pad_width(total: usize) -> usize {
+    match total {
+        0..=9 => 1,
+        10..=99 => 2,
+        100..=999 => 3,
+        _ => 4,
+    }
+}
+
+static PDF: PdfDecoder = PdfDecoder;
 static PLAIN_TEXT: PlainTextDecoder = PlainTextDecoder;
-static DECODERS: &[&dyn Decoder] = &[&PLAIN_TEXT];
+static DECODERS: &[&dyn Decoder] = &[&PDF, &PLAIN_TEXT];
 
 /// Dispatch `(path, bytes)` to the first registered decoder that accepts it.
 pub fn decode_file(path: &Path, bytes: &[u8]) -> Result<Vec<DecodedUnit>> {
@@ -71,5 +117,35 @@ mod tests {
         let err = decode_file(Path::new("bin.dat"), &[0xFFu8, 0xFE, 0xFD])
             .expect_err("non-utf8 must fail");
         assert!(err.to_string().to_lowercase().contains("utf-8"));
+    }
+
+    #[test]
+    fn pdf_decoder_claims_by_extension() {
+        assert!(PdfDecoder.can_decode(Path::new("report.pdf"), b""));
+        assert!(PdfDecoder.can_decode(Path::new("REPORT.PDF"), b""));
+        assert!(PdfDecoder.can_decode(Path::new("Mixed.Pdf"), b""));
+    }
+
+    #[test]
+    fn pdf_decoder_claims_by_magic_bytes() {
+        assert!(PdfDecoder.can_decode(Path::new("no-extension"), b"%PDF-1.4\n..."));
+    }
+
+    #[test]
+    fn pdf_decoder_rejects_non_pdf() {
+        assert!(!PdfDecoder.can_decode(Path::new("note.md"), b"# hello"));
+        assert!(!PdfDecoder.can_decode(Path::new("data.bin"), &[0x00, 0x01, 0x02]));
+    }
+
+    #[test]
+    fn page_pad_width_scales_with_total() {
+        assert_eq!(page_pad_width(0), 1);
+        assert_eq!(page_pad_width(1), 1);
+        assert_eq!(page_pad_width(9), 1);
+        assert_eq!(page_pad_width(10), 2);
+        assert_eq!(page_pad_width(99), 2);
+        assert_eq!(page_pad_width(100), 3);
+        assert_eq!(page_pad_width(999), 3);
+        assert_eq!(page_pad_width(1000), 4);
     }
 }
