@@ -676,6 +676,118 @@ pub fn drift_state(ctx_path: &Path) -> Result<DriftState> {
     })
 }
 
+// -------------------------------- integrity verification --------------------------------
+
+/// Result of verifying a single blob-backed manifest entry (spec §13.1, §13.5).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub enum IntegrityStatus {
+    Ok,
+    Tampered,
+    Missing,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct VerifiedEntry {
+    pub path: String,
+    pub blob_ref: String,
+    pub status: IntegrityStatus,
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct OrphanBlob {
+    pub blob_hash: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct VerifyReport {
+    pub entries: Vec<VerifiedEntry>,
+    pub orphans: Vec<OrphanBlob>,
+    pub has_failures: bool,
+}
+
+/// Walks every manifest entry with a `blob_ref`, re-hashing the on-disk blob via
+/// [`artifact::blob::read_verified`]. Also lists any file in `blobs/sha256/` that
+/// no entry references. Pure reporting: never mutates disk or manifest.
+pub fn verify_context(name: &str) -> Result<VerifyReport> {
+    let ctx_path = open_existing_context(name)?;
+    let manifest = Manifest::load(&ctx_path)?;
+
+    let mut entries: Vec<VerifiedEntry> = Vec::new();
+    let mut referenced: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    for source in &manifest.sources {
+        for entry in &source.files {
+            let Some(blob_ref) = entry.blob_ref.as_deref() else {
+                continue;
+            };
+            referenced.insert(blob_ref.trim_start_matches("sha256:").to_string());
+            let verified = match artifact::blob::read_verified(
+                &ctx_path,
+                blob_ref,
+                &entry.hash_at_index,
+            ) {
+                Ok(_) => VerifiedEntry {
+                    path: entry.path.clone(),
+                    blob_ref: blob_ref.to_string(),
+                    status: IntegrityStatus::Ok,
+                    reason: None,
+                },
+                Err(artifact::blob::IntegrityError::Missing(_)) => VerifiedEntry {
+                    path: entry.path.clone(),
+                    blob_ref: blob_ref.to_string(),
+                    status: IntegrityStatus::Missing,
+                    reason: None,
+                },
+                Err(err @ artifact::blob::IntegrityError::BlobDigest { .. })
+                | Err(err @ artifact::blob::IntegrityError::ContentDigest { .. }) => VerifiedEntry {
+                    path: entry.path.clone(),
+                    blob_ref: blob_ref.to_string(),
+                    status: IntegrityStatus::Tampered,
+                    reason: Some(err.to_string()),
+                },
+                Err(err @ artifact::blob::IntegrityError::Io(_)) => VerifiedEntry {
+                    path: entry.path.clone(),
+                    blob_ref: blob_ref.to_string(),
+                    status: IntegrityStatus::Missing,
+                    reason: Some(err.to_string()),
+                },
+            };
+            entries.push(verified);
+        }
+    }
+
+    let mut orphans: Vec<OrphanBlob> = Vec::new();
+    let blobs_dir = blobs_path(&ctx_path);
+    if blobs_dir.exists() {
+        for dir_entry in fs::read_dir(&blobs_dir)
+            .with_context(|| format!("read {}", blobs_dir.display()))?
+        {
+            let dir_entry = dir_entry?;
+            if !dir_entry.file_type()?.is_file() {
+                continue;
+            }
+            let name = dir_entry.file_name().to_string_lossy().into_owned();
+            if !referenced.contains(&name) {
+                orphans.push(OrphanBlob {
+                    blob_hash: format!("sha256:{name}"),
+                });
+            }
+        }
+    }
+    orphans.sort_by(|a, b| a.blob_hash.cmp(&b.blob_hash));
+
+    let has_failures = entries
+        .iter()
+        .any(|e| matches!(e.status, IntegrityStatus::Tampered | IntegrityStatus::Missing));
+
+    Ok(VerifyReport {
+        entries,
+        orphans,
+        has_failures,
+    })
+}
+
 // -------------------------------- aura --------------------------------
 
 /// Read-only snapshot of aura content for inclusion in query responses.
@@ -1484,5 +1596,129 @@ mod tests {
             2,
             "old blob MUST remain (blobs are immutable, no GC)"
         );
+    }
+
+    #[tokio::test]
+    async fn verify_reports_ok_for_clean_blobs() {
+        let _guard = crate::test_support::env_lock()
+            .lock()
+            .expect("test lock poisoned");
+        let _env = setup_aura_env();
+
+        init_context("verify-ok").await.expect("init context");
+
+        let src_dir = TempDir::new().expect("src dir");
+        let file_path = src_dir.path().join("note.md");
+        fs::write(&file_path, "verified body").expect("write src");
+
+        add_to_context("verify-ok", &file_path, Some(ContentLayer::Semantic), true)
+            .await
+            .expect("add with content");
+
+        let report = verify_context("verify-ok").expect("verify context");
+        assert_eq!(report.entries.len(), 1);
+        assert_eq!(report.entries[0].status, IntegrityStatus::Ok);
+        assert!(report.orphans.is_empty());
+        assert!(!report.has_failures);
+    }
+
+    #[tokio::test]
+    async fn verify_detects_tampered_blob() {
+        let _guard = crate::test_support::env_lock()
+            .lock()
+            .expect("test lock poisoned");
+        let _env = setup_aura_env();
+
+        init_context("verify-tamper").await.expect("init context");
+        let ctx_path = open_existing_context("verify-tamper").expect("open context");
+
+        let src_dir = TempDir::new().expect("src dir");
+        let file_path = src_dir.path().join("note.md");
+        fs::write(&file_path, "original body").expect("write src");
+
+        add_to_context("verify-tamper", &file_path, Some(ContentLayer::Semantic), true)
+            .await
+            .expect("add with content");
+
+        let manifest = Manifest::load(&ctx_path).expect("load manifest");
+        let blob_ref = manifest
+            .sources
+            .first()
+            .and_then(|s| s.files.first())
+            .and_then(|e| e.blob_ref.clone())
+            .expect("blob_ref");
+        let blob_path = artifact::blobs_path(&ctx_path)
+            .join(blob_ref.trim_start_matches("sha256:"));
+        fs::write(&blob_path, b"not a valid zstd blob").expect("tamper blob");
+
+        let report = verify_context("verify-tamper").expect("verify context");
+        assert_eq!(report.entries.len(), 1);
+        assert_eq!(report.entries[0].status, IntegrityStatus::Tampered);
+        assert!(report.has_failures);
+    }
+
+    #[tokio::test]
+    async fn verify_detects_missing_blob() {
+        let _guard = crate::test_support::env_lock()
+            .lock()
+            .expect("test lock poisoned");
+        let _env = setup_aura_env();
+
+        init_context("verify-missing").await.expect("init context");
+        let ctx_path = open_existing_context("verify-missing").expect("open context");
+
+        let src_dir = TempDir::new().expect("src dir");
+        let file_path = src_dir.path().join("note.md");
+        fs::write(&file_path, "soon to vanish").expect("write src");
+
+        add_to_context("verify-missing", &file_path, Some(ContentLayer::Semantic), true)
+            .await
+            .expect("add with content");
+
+        let manifest = Manifest::load(&ctx_path).expect("load manifest");
+        let blob_ref = manifest
+            .sources
+            .first()
+            .and_then(|s| s.files.first())
+            .and_then(|e| e.blob_ref.clone())
+            .expect("blob_ref");
+        let blob_path = artifact::blobs_path(&ctx_path)
+            .join(blob_ref.trim_start_matches("sha256:"));
+        fs::remove_file(&blob_path).expect("remove blob");
+
+        let report = verify_context("verify-missing").expect("verify context");
+        assert_eq!(report.entries.len(), 1);
+        assert_eq!(report.entries[0].status, IntegrityStatus::Missing);
+        assert!(report.has_failures);
+    }
+
+    #[tokio::test]
+    async fn verify_reports_orphan_blobs() {
+        let _guard = crate::test_support::env_lock()
+            .lock()
+            .expect("test lock poisoned");
+        let _env = setup_aura_env();
+
+        init_context("verify-orphan").await.expect("init context");
+        let ctx_path = open_existing_context("verify-orphan").expect("open context");
+
+        let src_dir = TempDir::new().expect("src dir");
+        let file_path = src_dir.path().join("note.md");
+        fs::write(&file_path, "referenced body").expect("write src");
+
+        add_to_context("verify-orphan", &file_path, Some(ContentLayer::Semantic), true)
+            .await
+            .expect("add with content");
+
+        let orphan_hex = "0".repeat(64);
+        let orphan_path = artifact::blobs_path(&ctx_path).join(&orphan_hex);
+        fs::write(&orphan_path, b"stray bytes").expect("write orphan");
+
+        let report = verify_context("verify-orphan").expect("verify context");
+        assert_eq!(report.entries.len(), 1);
+        assert_eq!(report.entries[0].status, IntegrityStatus::Ok);
+        assert_eq!(report.orphans.len(), 1);
+        assert_eq!(report.orphans[0].blob_hash, format!("sha256:{orphan_hex}"));
+        assert!(!report.has_failures);
     }
 }
