@@ -1,8 +1,8 @@
 //! File decoding: bytes → one or more `DecodedUnit`s of UTF-8 text.
 //!
 //! A single source file may expand into multiple indexable units. [`PdfDecoder`] produces one
-//! unit per page; [`XlsxDecoder`] produces one unit per worksheet; [`PlainTextDecoder`] is the
-//! fallback that passes UTF-8 files through unchanged.
+//! unit per page; [`XlsxDecoder`] produces one unit per worksheet; [`HtmlDecoder`] strips HTML
+//! markup; [`PlainTextDecoder`] is the fallback that passes UTF-8 files through unchanged.
 
 use anyhow::{anyhow, Result};
 use calamine::{Data, Range, Reader};
@@ -211,10 +211,61 @@ fn render_separator(max_cols: usize) -> String {
     out
 }
 
+/// HTML → plain text via [`html2text`]. Strips tags, inlines links as `text [url]`, and renders
+/// list/heading structure as readable prose so downstream chunking sees meaningful content rather
+/// than raw markup. Claims both `.html` / `.htm` / `.xhtml` by extension and any byte stream that
+/// opens with a `<!DOCTYPE html` / `<html` / `<?xml ... ?>` hint so saved pages without extensions
+/// are still cleaned up.
+pub struct HtmlDecoder;
+
+const HTML_RENDER_WIDTH: usize = 100;
+
+impl Decoder for HtmlDecoder {
+    fn can_decode(&self, path: &Path, bytes: &[u8]) -> bool {
+        let ext_matches = path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| {
+                matches!(
+                    ext.to_ascii_lowercase().as_str(),
+                    "html" | "htm" | "xhtml"
+                )
+            })
+            .unwrap_or(false);
+        if ext_matches {
+            return true;
+        }
+        looks_like_html(bytes)
+    }
+
+    fn decode(&self, path: &Path, bytes: &[u8]) -> Result<Vec<DecodedUnit>> {
+        let text = html2text::from_read(bytes, HTML_RENDER_WIDTH)
+            .map_err(|err| anyhow!("html render failed for {}: {err}", path.display()))?;
+        Ok(vec![DecodedUnit {
+            virtual_path: PathBuf::new(),
+            text,
+        }])
+    }
+}
+
+fn looks_like_html(bytes: &[u8]) -> bool {
+    // Skip leading whitespace / BOM before the sniff so saved pages aren't missed.
+    let trimmed = bytes
+        .iter()
+        .position(|b| !b.is_ascii_whitespace() && *b != 0xEF && *b != 0xBB && *b != 0xBF)
+        .map(|idx| &bytes[idx..])
+        .unwrap_or(bytes);
+    let prefix_lower: Vec<u8> = trimmed.iter().take(64).map(|b| b.to_ascii_lowercase()).collect();
+    prefix_lower.starts_with(b"<!doctype html")
+        || prefix_lower.starts_with(b"<html")
+        || prefix_lower.starts_with(b"<?xml")
+}
+
 static PDF: PdfDecoder = PdfDecoder;
 static XLSX: XlsxDecoder = XlsxDecoder;
+static HTML: HtmlDecoder = HtmlDecoder;
 static PLAIN_TEXT: PlainTextDecoder = PlainTextDecoder;
-static DECODERS: &[&dyn Decoder] = &[&PDF, &XLSX, &PLAIN_TEXT];
+static DECODERS: &[&dyn Decoder] = &[&PDF, &XLSX, &HTML, &PLAIN_TEXT];
 
 /// Dispatch `(path, bytes)` to the first registered decoder that accepts it.
 pub fn decode_file(path: &Path, bytes: &[u8]) -> Result<Vec<DecodedUnit>> {
@@ -295,6 +346,36 @@ mod tests {
         let row = vec!["a".to_string(), "b|c".to_string()];
         let rendered = render_row(&row, 3);
         assert_eq!(rendered, "| a | b\\|c |  |\n");
+    }
+
+    #[test]
+    fn html_decoder_claims_by_extension() {
+        for ext in ["html", "HTM", "xhtml"] {
+            let path = format!("page.{ext}");
+            assert!(HtmlDecoder.can_decode(Path::new(&path), b""));
+        }
+    }
+
+    #[test]
+    fn html_decoder_claims_by_sniff() {
+        assert!(HtmlDecoder.can_decode(Path::new("no-ext"), b"<!DOCTYPE html><html>..."));
+        assert!(HtmlDecoder.can_decode(Path::new("no-ext"), b"  \n<html><body>x</body></html>"));
+        assert!(HtmlDecoder.can_decode(Path::new("no-ext"), b"<?xml version=\"1.0\"?><html/>"));
+        assert!(!HtmlDecoder.can_decode(Path::new("note.md"), b"# heading"));
+    }
+
+    #[test]
+    fn html_decoder_strips_tags() {
+        let units = decode_file(
+            Path::new("page.html"),
+            b"<html><body><h1>Hi</h1><p>A <b>bold</b> claim.</p></body></html>",
+        )
+        .expect("decode html");
+        assert_eq!(units.len(), 1);
+        let text = &units[0].text;
+        assert!(text.contains("Hi"), "missing heading: {text:?}");
+        assert!(text.contains("bold"), "missing emphasized word: {text:?}");
+        assert!(!text.contains("<h1>"), "tags leaked: {text:?}");
     }
 
     #[test]
