@@ -114,31 +114,16 @@ pub async fn add_to_context(
                     continue;
                 }
             };
-            let units = match decode_file(entry_path, &bytes) {
-                Ok(units) => units,
-                Err(err) => {
-                    eprintln!("skipped {}: {}", entry_path.display(), err);
-                    continue;
-                }
-            };
-            for unit in units {
-                let unit_rel = if unit.virtual_path.as_os_str().is_empty() {
-                    rel.clone()
-                } else {
-                    rel.join(&unit.virtual_path)
+            let outcome =
+                match add_source_file(&ctx_path, &root, &rel, &bytes, layer, with_content).await {
+                    Ok(outcome) => outcome,
+                    Err(err) => {
+                        eprintln!("skipped {}: {}", entry_path.display(), err);
+                        continue;
+                    }
                 };
-                let outcome = add_file_buffer(
-                    &ctx_path,
-                    &root,
-                    &unit_rel,
-                    &unit.text,
-                    layer,
-                    with_content,
-                )
-                .await?;
-                total.chunks_written += outcome.chunks_written;
-                total.entities_written += outcome.entities_written;
-            }
+            total.chunks_written += outcome.chunks_written;
+            total.entities_written += outcome.entities_written;
         }
         return Ok(total);
     }
@@ -149,22 +134,7 @@ pub async fn add_to_context(
         .unwrap_or_else(|| PathBuf::from("/"));
     let rel = PathBuf::from(abs.file_name().context("file without a name")?);
     let bytes = fs::read(&abs).with_context(|| format!("failed to read {}", abs.display()))?;
-    let units = decode_file(&abs, &bytes)
-        .with_context(|| format!("failed to decode {}", abs.display()))?;
-
-    let mut total = AddOutcome::default();
-    for unit in units {
-        let unit_rel = if unit.virtual_path.as_os_str().is_empty() {
-            rel.clone()
-        } else {
-            rel.join(&unit.virtual_path)
-        };
-        let outcome =
-            add_file_buffer(&ctx_path, &root, &unit_rel, &unit.text, layer, with_content).await?;
-        total.chunks_written += outcome.chunks_written;
-        total.entities_written += outcome.entities_written;
-    }
-    Ok(total)
+    add_source_file(&ctx_path, &root, &rel, &bytes, layer, with_content).await
 }
 
 pub async fn add_content_to_context(
@@ -195,21 +165,23 @@ pub async fn update_context(context: &str) -> Result<ContextStatus> {
     let manifest = Manifest::load(&ctx_path)?;
     let with_content = manifest.config.store_raw_content;
 
-    let targets: Vec<(PathBuf, PathBuf, Option<ContentLayer>)> = manifest
-        .sources
-        .iter()
-        .flat_map(|source| {
-            let root = PathBuf::from(&source.root);
-            source.files.iter().map(move |entry| {
-                let rel = PathBuf::from(&entry.path);
-                let layer = parse_layer(&entry.r#type).ok();
-                (root.clone(), rel, layer)
-            })
-        })
-        .collect();
+    let mut targets: Vec<(PathBuf, PathBuf, Option<ContentLayer>)> = Vec::new();
+    let mut seen: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+    for source in &manifest.sources {
+        let root = PathBuf::from(&source.root);
+        for entry in &source.files {
+            let source_path = entry.effective_source_path().to_string();
+            if !seen.insert((source.root.clone(), source_path.clone())) {
+                continue;
+            }
+            let rel = PathBuf::from(&source_path);
+            let layer = parse_layer(&entry.r#type).ok();
+            targets.push((root.clone(), rel, layer));
+        }
+    }
 
-    for (root, rel, layer) in targets {
-        let abs = root.join(&rel);
+    for (root, source_rel, layer) in targets {
+        let abs = root.join(&source_rel);
         if !abs.exists() {
             continue;
         }
@@ -220,20 +192,10 @@ pub async fn update_context(context: &str) -> Result<ContextStatus> {
                 continue;
             }
         };
-        let units = match decode_file(&abs, &bytes) {
-            Ok(units) => units,
-            Err(err) => {
-                eprintln!("skipped {}: {}", abs.display(), err);
-                continue;
-            }
-        };
-        for unit in units {
-            let unit_rel = if unit.virtual_path.as_os_str().is_empty() {
-                rel.clone()
-            } else {
-                rel.join(&unit.virtual_path)
-            };
-            add_file_buffer(&ctx_path, &root, &unit_rel, &unit.text, layer, with_content).await?;
+        if let Err(err) =
+            add_source_file(&ctx_path, &root, &source_rel, &bytes, layer, with_content).await
+        {
+            eprintln!("skipped {}: {}", abs.display(), err);
         }
     }
 
@@ -300,13 +262,27 @@ pub fn context_status(context: &str) -> Result<ContextStatus> {
 
     for source in manifest.sources.iter_mut() {
         let root = PathBuf::from(&source.root);
+        let mut hashed: std::collections::HashMap<String, Option<String>> =
+            std::collections::HashMap::new();
         for entry in source.files.iter_mut() {
-            let abs = root.join(&entry.path);
-            if !abs.exists() {
+            let source_path = entry.effective_source_path().to_string();
+            let abs = root.join(&source_path);
+            let current_hash = match hashed.get(&source_path) {
+                Some(cached) => cached.clone(),
+                None => {
+                    let computed = if abs.exists() {
+                        Some(hash_file(&abs)?)
+                    } else {
+                        None
+                    };
+                    hashed.insert(source_path.clone(), computed.clone());
+                    computed
+                }
+            };
+            let Some(current_hash) = current_hash else {
                 pending_count += 1;
                 continue;
-            }
-            let current_hash = hash_file(&abs)?;
+            };
             if current_hash != entry.hash {
                 entry.hash = current_hash.clone();
                 manifest_dirty = true;
@@ -321,6 +297,7 @@ pub fn context_status(context: &str) -> Result<ContextStatus> {
     }
 
     drifted_files.sort();
+    drifted_files.dedup();
 
     if manifest_dirty {
         manifest.save(&ctx_path)?;
@@ -350,7 +327,119 @@ async fn bootstrap_procedural(context: &str) -> Result<()> {
     Ok(())
 }
 
-/// Ingests a filesystem-backed file and records it in the manifest under `root`/`rel_path`.
+/// Top-level ingestion entry for a filesystem-backed source file. Hashes `bytes` once, decodes
+/// into one or more units, ingests each, and removes any manifest/index records left over from
+/// an earlier decode that no longer appear in the new unit set.
+async fn add_source_file(
+    ctx_path: &Path,
+    root: &Path,
+    source_rel: &Path,
+    bytes: &[u8],
+    layer: Option<ContentLayer>,
+    with_content: bool,
+) -> Result<AddOutcome> {
+    let source_hash = hash_bytes(bytes);
+    let root_str = root.display().to_string();
+    let source_rel_str = source_rel.display().to_string();
+
+    {
+        let manifest = Manifest::load(ctx_path)?;
+        let raw_enabled = manifest.config.store_raw_content || with_content;
+        if let Some(source) = manifest.sources.iter().find(|s| s.root == root_str) {
+            let entries: Vec<&ManifestEntry> = source
+                .files
+                .iter()
+                .filter(|entry| entry.effective_source_path() == source_rel_str)
+                .collect();
+            if !entries.is_empty()
+                && entries.iter().all(|entry| {
+                    entry.hash_at_index == source_hash
+                        && (!raw_enabled || entry.blob_ref.is_some())
+                })
+            {
+                return Ok(AddOutcome::default());
+            }
+        }
+    }
+
+    let source_abs = root.join(source_rel);
+    let units = decode_file(&source_abs, bytes)
+        .with_context(|| format!("failed to decode {}", source_abs.display()))?;
+
+    let mut total = AddOutcome::default();
+    let mut new_unit_paths: Vec<String> = Vec::with_capacity(units.len());
+
+    for unit in units {
+        let unit_rel = if unit.virtual_path.as_os_str().is_empty() {
+            source_rel.to_path_buf()
+        } else {
+            source_rel.join(&unit.virtual_path)
+        };
+        let source_path_for_entry = if unit.virtual_path.as_os_str().is_empty() {
+            None
+        } else {
+            Some(source_rel)
+        };
+        new_unit_paths.push(unit_rel.display().to_string());
+
+        let outcome = add_file_buffer(
+            ctx_path,
+            root,
+            &unit_rel,
+            &unit.text,
+            layer,
+            with_content,
+            &source_hash,
+            source_path_for_entry,
+        )
+        .await?;
+        total.chunks_written += outcome.chunks_written;
+        total.entities_written += outcome.entities_written;
+    }
+
+    let orphan_paths: Vec<String> = {
+        let manifest = Manifest::load(ctx_path)?;
+        manifest
+            .sources
+            .iter()
+            .find(|s| s.root == root_str)
+            .map(|source| {
+                source
+                    .files
+                    .iter()
+                    .filter(|entry| {
+                        entry.effective_source_path() == source_rel_str
+                            && !new_unit_paths.contains(&entry.path)
+                    })
+                    .map(|entry| entry.path.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    if !orphan_paths.is_empty() {
+        let mut manifest = Manifest::load(ctx_path)?;
+        if let Some(source) = manifest.source_for_mut(&root_str) {
+            source
+                .files
+                .retain(|entry| !orphan_paths.contains(&entry.path));
+        }
+        manifest.save(ctx_path)?;
+        let env = get_or_open_env(&index_path(ctx_path))?;
+        env.update_state(|state| {
+            for orphan in &orphan_paths {
+                let orphan_source_id = root.join(orphan).display().to_string();
+                state.remove_source(&orphan_source_id);
+            }
+            Ok(())
+        })?;
+    }
+
+    Ok(total)
+}
+
+/// Ingests a single decoded unit and records it in the manifest under `root`/`rel_path`.
+/// `source_hash` is the digest of the original source-file bytes (shared across all virtual
+/// units from the same file); `source_path` is the real file path when `rel_path` is virtual.
 async fn add_file_buffer(
     ctx_path: &Path,
     root: &Path,
@@ -358,11 +447,13 @@ async fn add_file_buffer(
     content: &str,
     layer: Option<ContentLayer>,
     with_content: bool,
+    source_hash: &str,
+    source_path: Option<&Path>,
 ) -> Result<AddOutcome> {
-    let source_hash = hash_bytes(content.as_bytes());
     let root_str = root.display().to_string();
     let rel_str = rel_path.display().to_string();
     let source_id = root.join(rel_path).display().to_string();
+    let source_path_str = source_path.map(|p| p.display().to_string());
 
     let mut manifest = Manifest::load(ctx_path)?;
     sync_manifest_config(&mut manifest)?;
@@ -399,19 +490,21 @@ async fn add_file_buffer(
     let indexed_at = Utc::now();
     let source = manifest.upsert_source(&root_str);
     if let Some(entry) = source.files.iter_mut().find(|e| e.path == rel_str) {
-        entry.hash = source_hash.clone();
-        entry.hash_at_index = source_hash;
+        entry.hash = source_hash.to_string();
+        entry.hash_at_index = source_hash.to_string();
         entry.indexed_at = indexed_at;
         entry.r#type = chosen_layer.to_string();
         entry.blob_ref = entry_blob_ref;
+        entry.source_path = source_path_str;
     } else {
         source.files.push(ManifestEntry {
             path: rel_str,
-            hash: source_hash.clone(),
-            hash_at_index: source_hash,
+            hash: source_hash.to_string(),
+            hash_at_index: source_hash.to_string(),
             indexed_at,
             r#type: chosen_layer.to_string(),
             blob_ref: entry_blob_ref,
+            source_path: source_path_str,
         });
     }
     manifest.save(ctx_path)?;

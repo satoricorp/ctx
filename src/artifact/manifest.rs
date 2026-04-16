@@ -43,6 +43,18 @@ pub struct ManifestEntry {
     pub r#type: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blob_ref: Option<String>,
+    /// Real file path when `path` is a virtual unit (e.g. a PDF page or spreadsheet sheet).
+    /// `None` when the entry represents the entire source file (default for plain-text sources).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_path: Option<String>,
+}
+
+impl ManifestEntry {
+    /// Real on-disk path to hash for drift detection. Equals `path` unless the entry
+    /// was produced by a multi-unit decoder that set `source_path` explicitly.
+    pub fn effective_source_path(&self) -> &str {
+        self.source_path.as_deref().unwrap_or(&self.path)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -166,5 +178,69 @@ impl Manifest {
             updated_at: Utc::now(),
         });
         self.aura.files.last_mut().expect("aura entry just pushed")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn effective_source_path_defaults_to_path() {
+        let entry = ManifestEntry {
+            path: "docs/notes.md".into(),
+            hash: "sha256:0".into(),
+            hash_at_index: "sha256:0".into(),
+            indexed_at: Utc::now(),
+            r#type: "semantic".into(),
+            blob_ref: None,
+            source_path: None,
+        };
+        assert_eq!(entry.effective_source_path(), "docs/notes.md");
+    }
+
+    #[test]
+    fn effective_source_path_honors_virtual_entries() {
+        let entry = ManifestEntry {
+            path: "docs/report.pdf/page-3.txt".into(),
+            hash: "sha256:0".into(),
+            hash_at_index: "sha256:0".into(),
+            indexed_at: Utc::now(),
+            r#type: "semantic".into(),
+            blob_ref: None,
+            source_path: Some("docs/report.pdf".into()),
+        };
+        assert_eq!(entry.effective_source_path(), "docs/report.pdf");
+    }
+
+    #[test]
+    fn source_path_is_omitted_when_none() {
+        let entry = ManifestEntry {
+            path: "a.md".into(),
+            hash: "sha256:0".into(),
+            hash_at_index: "sha256:0".into(),
+            indexed_at: Utc::now(),
+            r#type: "semantic".into(),
+            blob_ref: None,
+            source_path: None,
+        };
+        let json = serde_json::to_string(&entry).expect("serialize");
+        assert!(!json.contains("source_path"), "got {json}");
+    }
+
+    #[test]
+    fn source_path_round_trips_when_set() {
+        let entry = ManifestEntry {
+            path: "a.pdf/page-1.txt".into(),
+            hash: "sha256:0".into(),
+            hash_at_index: "sha256:0".into(),
+            indexed_at: Utc::now(),
+            r#type: "semantic".into(),
+            blob_ref: None,
+            source_path: Some("a.pdf".into()),
+        };
+        let json = serde_json::to_string(&entry).expect("serialize");
+        let back: ManifestEntry = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.source_path.as_deref(), Some("a.pdf"));
     }
 }
