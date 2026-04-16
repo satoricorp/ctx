@@ -4,7 +4,7 @@ import { GeistSans } from "geist/font/sans";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "ctx",
+  title: "CTX: Portable Context Protocol",
   description: "ctx",
 };
 
