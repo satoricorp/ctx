@@ -1,6 +1,7 @@
 pub mod add;
 pub mod init;
 pub mod list;
+pub mod scope;
 pub mod mcp;
 pub mod publish;
 pub mod pull;

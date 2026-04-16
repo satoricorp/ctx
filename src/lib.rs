@@ -29,6 +29,13 @@ use store::schema::{AddOutcome, ContextListing, ContextStatus, RecordProcedureIn
 const BOOTSTRAP_FILES: &[&str] = &["AGENTS.md", "CLAUDE.md", "CONTEXT.md"];
 
 pub async fn init_context(name: &str) -> Result<ContextStatus> {
+    prepare_context_layout(name)?;
+    bootstrap_procedural(name).await?;
+    context_status(name)
+}
+
+/// Creates the context directory, manifest, and Helix env. Shared by **`init`** and first-**`add`**.
+fn prepare_context_layout(name: &str) -> Result<PathBuf> {
     ensure_base_dirs()?;
     seed_default_config()?;
 
@@ -45,8 +52,7 @@ pub async fn init_context(name: &str) -> Result<ContextStatus> {
     manifest.save(&ctx_path)?;
 
     get_or_open_env(&index_path(&ctx_path))?;
-    bootstrap_procedural(name).await?;
-    context_status(name)
+    Ok(ctx_path)
 }
 
 pub async fn add_to_context(
@@ -54,7 +60,7 @@ pub async fn add_to_context(
     path: &Path,
     layer: Option<ContentLayer>,
 ) -> Result<AddOutcome> {
-    let ctx_path = open_existing_context(context)?;
+    let ctx_path = ensure_context_for_add(context)?;
 
     if path.is_dir() {
         let mut total = AddOutcome::default();
@@ -91,7 +97,7 @@ pub async fn add_content_to_context(
     source: Option<&str>,
     layer: Option<ContentLayer>,
 ) -> Result<AddOutcome> {
-    let ctx_path = open_existing_context(context)?;
+    let ctx_path = ensure_context_for_add(context)?;
     let source_path = source
         .map(ToOwned::to_owned)
         .unwrap_or_else(|| format!("inline/{}.txt", uuid::Uuid::new_v4()));
@@ -329,13 +335,34 @@ fn open_existing_context(context: &str) -> Result<PathBuf> {
     Ok(ctx_path)
 }
 
+/// Ensures the context directory exists, initializing it when invoked from **`add`** paths.
+fn ensure_context_for_add(context: &str) -> Result<PathBuf> {
+    let ctx_path = context_path(context);
+    if ctx_path.exists() {
+        return Ok(ctx_path);
+    }
+    prepare_context_layout(context)?;
+    eprintln!("created context {}", context);
+    Ok(ctx_path)
+}
+
 fn should_skip_path(path: &Path) -> bool {
-    path.components().any(|component| {
+    use std::ffi::OsStr;
+
+    if path.components().any(|component| {
         matches!(
             component.as_os_str().to_str(),
             Some(".git" | ".ctx" | "target" | "node_modules")
         )
-    })
+    }) {
+        return true;
+    }
+
+    // macOS / Windows junk files (binary or non-UTF-8)
+    match path.file_name() {
+        Some(name) if name == OsStr::new(".DS_Store") || name == OsStr::new("Thumbs.db") => true,
+        _ => false,
+    }
 }
 
 fn display_source_path(path: &Path) -> Result<String> {

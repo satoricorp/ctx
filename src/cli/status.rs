@@ -1,15 +1,20 @@
 use anyhow::Result;
 use clap::Args;
 
+use crate::cli::scope::{apply_context_image_flag, ContextSelectArgs};
+
 #[derive(Debug, Args)]
 pub struct StatusArgs {
-    #[arg(short = 'c', long = "context")]
-    pub context: Option<String>,
+    #[command(flatten)]
+    pub select: ContextSelectArgs,
 }
 
 pub async fn run(args: StatusArgs) -> Result<()> {
+    apply_context_image_flag(&args.select.image);
     let context = args
+        .select
         .context
+        .clone()
         .unwrap_or(crate::artifact::infer_context_name()?);
     let status = crate::context_status(&context)?;
     println!("context {}", status.name);
