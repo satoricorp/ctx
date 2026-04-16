@@ -1,8 +1,13 @@
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, bail, Result};
 use regex::Regex;
 use serde::Deserialize;
+use serde_json::Value;
 use std::collections::BTreeSet;
 use std::sync::OnceLock;
+
+use super::json::{
+    deserialize_first_json_value, extract_json_object, normalize_llm_json_text,
+};
 
 #[derive(Debug, Clone, Default)]
 pub struct Triple {
@@ -18,6 +23,8 @@ pub struct SemanticExtraction {
     pub entities: Vec<String>,
     pub triples: Vec<Triple>,
 }
+
+const MAX_JSON_WRAPPER_DEPTH: u8 = 8;
 
 #[derive(Debug, Deserialize)]
 struct SemanticLlmOutput {
@@ -57,9 +64,9 @@ async fn extract_semantic_with_llm(content: &str, source_hint: &str) -> Result<S
 }
 
 fn parse_semantic_llm_output(raw: &str) -> Result<SemanticExtraction> {
-    let json = extract_json_object(raw)?;
-    let parsed: SemanticLlmOutput = serde_json::from_str(json)
-        .map_err(|error| anyhow!("failed to parse semantic extraction JSON: {error}"))?;
+    let parsed: SemanticLlmOutput = parse_semantic_llm_output_inner(raw, 0).map_err(|error| {
+        anyhow!("failed to parse semantic extraction JSON: {error}")
+    })?;
 
     let mut entities = BTreeSet::new();
     for entity in parsed.entities {
@@ -106,50 +113,57 @@ fn parse_semantic_llm_output(raw: &str) -> Result<SemanticExtraction> {
     })
 }
 
-/// Find the first top-level JSON object in `raw` by matching `{` … `}` with nesting.
-/// Ignores braces inside double-quoted strings (with `\` escapes). Using `rfind('}')` is wrong
-/// when the model emits a `}` before the JSON (e.g. preamble or assistant prose), which used to
-/// panic with `begin <= end` when slicing.
-fn extract_json_object(raw: &str) -> Result<&str> {
-    let start = raw
-        .find('{')
-        .ok_or_else(|| anyhow!("model output did not contain a JSON object start"))?;
-
-    let bytes = raw.as_bytes();
-    let mut depth = 0i32;
-    let mut in_string = false;
-    let mut escape = false;
-
-    for i in start..raw.len() {
-        let b = bytes[i];
-
-        if in_string {
-            if escape {
-                escape = false;
-            } else if b == b'\\' {
-                escape = true;
-            } else if b == b'"' {
-                in_string = false;
-            }
-            continue;
-        }
-
-        match b {
-            b'"' => in_string = true,
-            b'{' => depth += 1,
-            b'}' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Ok(&raw[start..=i]);
-                }
-            }
-            _ => {}
+fn parse_semantic_llm_output_inner(raw: &str, depth: u8) -> Result<SemanticLlmOutput> {
+    if depth > MAX_JSON_WRAPPER_DEPTH {
+        bail!("semantic extraction JSON nested too deeply");
+    }
+    let normalized = normalize_llm_json_text(raw);
+    let mut candidates: Vec<String> = vec![normalized.clone()];
+    if let Ok(ext) = extract_json_object(&normalized) {
+        let ext = ext.to_string();
+        if ext != normalized {
+            candidates.push(ext);
         }
     }
 
-    Err(anyhow!(
-        "model output did not contain a balanced JSON object (opened at byte {start}, no matching `}}`)"
-    ))
+    let mut last_err: Option<anyhow::Error> = None;
+    for cand in candidates {
+        match try_semantic_llm_output_candidate(&cand, depth) {
+            Ok(parsed) => return Ok(parsed),
+            Err(e) => last_err = Some(e),
+        }
+    }
+
+    Err(last_err.unwrap_or_else(|| anyhow!("could not parse semantic extraction JSON")))
+}
+
+fn try_semantic_llm_output_candidate(cand: &str, depth: u8) -> Result<SemanticLlmOutput> {
+    let trimmed = cand.trim();
+    if trimmed.is_empty() {
+        return Err(anyhow!("empty JSON candidate"));
+    }
+    // Parse the first complete JSON value, then map into our struct (handles trailing prose).
+    let value: Value = deserialize_first_json_value(trimmed)?;
+    semantic_llm_output_from_value(value, depth)
+}
+
+fn semantic_llm_output_from_value(v: Value, depth: u8) -> Result<SemanticLlmOutput> {
+    match v {
+        Value::Object(_) => serde_json::from_value(v).map_err(|e| anyhow!("{e}")),
+        Value::Array(arr) => match arr.len() {
+            1 => semantic_llm_output_from_value(
+                arr.into_iter().next().expect("length checked"),
+                depth,
+            ),
+            _ => Err(anyhow!(
+                "expected one JSON object or a single-element array for semantic extraction"
+            )),
+        },
+        Value::String(s) => parse_semantic_llm_output_inner(&s, depth + 1),
+        _ => Err(anyhow!(
+            "expected a JSON object for semantic extraction (got non-object JSON)"
+        )),
+    }
 }
 
 fn warn_local_fallback_once(error: &anyhow::Error) {
@@ -276,6 +290,7 @@ fn compact(text: &str, max_chars: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    use crate::extraction::json::deserialize_first_json_value;
     use super::*;
 
     #[test]
@@ -301,5 +316,20 @@ mod tests {
         let raw = r#"{"summary":"uses } in text","facts":[],"entities":[],"triples":[]}"#;
         let parsed = parse_semantic_llm_output(raw).expect("semantic json");
         assert_eq!(parsed.summary, "uses } in text");
+    }
+
+    #[test]
+    fn parses_semantic_json_with_trailing_chars_inside_extracted_slice() {
+        // `from_str` rejects trailing non-whitespace; stream parse accepts the first value.
+        let json = r#"{"summary":"ok","facts":[],"entities":[],"triples":[]} tail"#;
+        let parsed: SemanticLlmOutput = deserialize_first_json_value(json).expect("first value");
+        assert_eq!(parsed.summary, "ok");
+    }
+
+    #[test]
+    fn parses_semantic_json_fenced_with_trailing_prose() {
+        let raw = "```json\n{\"summary\":\"hi\",\"facts\":[],\"entities\":[],\"triples\":[]}\n```\nThanks!";
+        let parsed = parse_semantic_llm_output(raw).expect("parse");
+        assert_eq!(parsed.summary, "hi");
     }
 }

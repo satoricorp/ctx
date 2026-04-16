@@ -1,5 +1,6 @@
 pub mod chunker;
 pub mod classifier;
+pub mod json;
 pub mod model;
 pub mod procedural;
 pub mod semantic;

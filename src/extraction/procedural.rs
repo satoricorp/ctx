@@ -2,6 +2,7 @@ use anyhow::{anyhow, Result};
 use serde::Deserialize;
 use std::sync::OnceLock;
 
+use super::json::{deserialize_first_json_value, extract_json_object};
 use crate::store::schema::TaskContext;
 
 #[derive(Debug, Clone, Default)]
@@ -55,8 +56,9 @@ async fn extract_procedural_with_llm(content: &str) -> Result<ProceduralExtracti
 
 fn parse_procedural_llm_output(raw: &str) -> Result<ProceduralExtraction> {
     let json = extract_json_object(raw)?;
-    let parsed: ProceduralLlmOutput = serde_json::from_str(json)
-        .map_err(|error| anyhow!("failed to parse procedural extraction JSON: {error}"))?;
+    let parsed: ProceduralLlmOutput = deserialize_first_json_value(json).map_err(|error| {
+        anyhow!("failed to parse procedural extraction JSON: {error}")
+    })?;
 
     let task_description = parsed.task_description.trim().to_string();
     if task_description.is_empty() {
@@ -89,16 +91,6 @@ fn parse_procedural_llm_output(raw: &str) -> Result<ProceduralExtraction> {
         context: parsed.context,
         confidence: parsed.confidence.unwrap_or(0.7).clamp(0.0, 1.0),
     })
-}
-
-fn extract_json_object(raw: &str) -> Result<&str> {
-    let start = raw
-        .find('{')
-        .ok_or_else(|| anyhow!("model output did not contain a JSON object start"))?;
-    let end = raw
-        .rfind('}')
-        .ok_or_else(|| anyhow!("model output did not contain a JSON object end"))?;
-    Ok(&raw[start..=end])
 }
 
 fn warn_local_fallback_once(error: &anyhow::Error) {
