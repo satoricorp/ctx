@@ -13,6 +13,7 @@ pub mod store;
 use anyhow::{bail, Context, Result};
 use chrono::Utc;
 use extraction::classifier::{classify_content, ContentLayer};
+use extraction::decoder::decode_file;
 use retrieval::query::{QueryResult, QueryType};
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -106,13 +107,38 @@ pub async fn add_to_context(
                 .strip_prefix(&root)
                 .unwrap_or(entry_path)
                 .to_path_buf();
-            let content = fs::read_to_string(entry_path).with_context(|| {
-                format!("failed to read {} as utf-8 text", entry_path.display())
-            })?;
-            let outcome =
-                add_file_buffer(&ctx_path, &root, &rel, &content, layer, with_content).await?;
-            total.chunks_written += outcome.chunks_written;
-            total.entities_written += outcome.entities_written;
+            let bytes = match fs::read(entry_path) {
+                Ok(bytes) => bytes,
+                Err(err) => {
+                    eprintln!("skipped {}: {}", entry_path.display(), err);
+                    continue;
+                }
+            };
+            let units = match decode_file(entry_path, &bytes) {
+                Ok(units) => units,
+                Err(err) => {
+                    eprintln!("skipped {}: {}", entry_path.display(), err);
+                    continue;
+                }
+            };
+            for unit in units {
+                let unit_rel = if unit.virtual_path.as_os_str().is_empty() {
+                    rel.clone()
+                } else {
+                    rel.join(&unit.virtual_path)
+                };
+                let outcome = add_file_buffer(
+                    &ctx_path,
+                    &root,
+                    &unit_rel,
+                    &unit.text,
+                    layer,
+                    with_content,
+                )
+                .await?;
+                total.chunks_written += outcome.chunks_written;
+                total.entities_written += outcome.entities_written;
+            }
         }
         return Ok(total);
     }
@@ -122,9 +148,23 @@ pub async fn add_to_context(
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from("/"));
     let rel = PathBuf::from(abs.file_name().context("file without a name")?);
-    let content = fs::read_to_string(&abs)
-        .with_context(|| format!("failed to read {} as utf-8 text", abs.display()))?;
-    add_file_buffer(&ctx_path, &root, &rel, &content, layer, with_content).await
+    let bytes = fs::read(&abs).with_context(|| format!("failed to read {}", abs.display()))?;
+    let units = decode_file(&abs, &bytes)
+        .with_context(|| format!("failed to decode {}", abs.display()))?;
+
+    let mut total = AddOutcome::default();
+    for unit in units {
+        let unit_rel = if unit.virtual_path.as_os_str().is_empty() {
+            rel.clone()
+        } else {
+            rel.join(&unit.virtual_path)
+        };
+        let outcome =
+            add_file_buffer(&ctx_path, &root, &unit_rel, &unit.text, layer, with_content).await?;
+        total.chunks_written += outcome.chunks_written;
+        total.entities_written += outcome.entities_written;
+    }
+    Ok(total)
 }
 
 pub async fn add_content_to_context(
@@ -173,9 +213,28 @@ pub async fn update_context(context: &str) -> Result<ContextStatus> {
         if !abs.exists() {
             continue;
         }
-        let content = fs::read_to_string(&abs)
-            .with_context(|| format!("failed to read {} as utf-8 text", abs.display()))?;
-        add_file_buffer(&ctx_path, &root, &rel, &content, layer, with_content).await?;
+        let bytes = match fs::read(&abs) {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                eprintln!("skipped {}: {}", abs.display(), err);
+                continue;
+            }
+        };
+        let units = match decode_file(&abs, &bytes) {
+            Ok(units) => units,
+            Err(err) => {
+                eprintln!("skipped {}: {}", abs.display(), err);
+                continue;
+            }
+        };
+        for unit in units {
+            let unit_rel = if unit.virtual_path.as_os_str().is_empty() {
+                rel.clone()
+            } else {
+                rel.join(&unit.virtual_path)
+            };
+            add_file_buffer(&ctx_path, &root, &unit_rel, &unit.text, layer, with_content).await?;
+        }
     }
 
     let mut manifest = Manifest::load(&ctx_path)?;
