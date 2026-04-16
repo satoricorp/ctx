@@ -1,12 +1,7 @@
 "use client";
 
-import localFont from "next/font/local";
 import { useState } from "react";
-
-const blobLogo = localFont({
-  src: "../public/fonts/Blob.woff2",
-  display: "swap",
-});
+import { blobLogo } from "./fonts";
 
 export function Logo() {
   const [offset, setOffset] = useState({ x: 0, y: 0 });
