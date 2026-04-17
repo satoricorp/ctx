@@ -14,10 +14,14 @@ pub mod store;
 use anyhow::{bail, Context, Result};
 use chrono::Utc;
 use extraction::classifier::{classify_content, ContentLayer};
-use extraction::decoder::decode_file;
+use extraction::decoder::{
+    any_binary_decoder_claims, decode_file, DecodedUnit, PlainTextUnitStream, PEEK_SNIFF_BYTES,
+    PLAIN_TEXT_STREAM_THRESHOLD,
+};
 use retrieval::query::{QueryResult, QueryType};
 use sha2::{Digest, Sha256};
-use std::fs;
+use std::fs::{self, File};
+use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
@@ -29,7 +33,9 @@ use index::procedural::{ingest_procedural_document, record_procedure_structured}
 use index::semantic::ingest_semantic_document;
 use install::{ensure_base_dirs, load_config, save_config};
 use store::get_or_open_env;
-use store::schema::{AddOutcome, ContextListing, ContextStatus, RecordProcedureInput};
+use store::schema::{
+    AddOutcome, ContextListing, ContextStatus, IngestionSummary, RecordProcedureInput,
+};
 
 const BOOTSTRAP_FILES: &[&str] = &["AGENTS.md", "CLAUDE.md", "CONTEXT.md"];
 
@@ -99,33 +105,67 @@ pub async fn add_to_context(
     if abs.is_dir() {
         let root = abs.clone();
         let mut total = AddOutcome::default();
-        for entry in WalkDir::new(&root).into_iter().filter_map(|entry| entry.ok()) {
+        let mut summary = IngestionSummary::default();
+        for entry in WalkDir::new(&root)
+            .into_iter()
+            .filter_map(|entry| entry.ok())
+        {
             let entry_path = entry.path();
-            if !entry.file_type().is_file() || should_skip_path(entry_path) {
+            if !entry.file_type().is_file() {
                 continue;
             }
+            match classify_path(entry_path) {
+                SkipCheck::Keep => {}
+                SkipCheck::DeniedExtension => {
+                    summary.files_seen += 1;
+                    summary.files_skipped_denylist += 1;
+                    continue;
+                }
+                SkipCheck::InfrastructureDir | SkipCheck::JunkFile => continue,
+            }
+            summary.files_seen += 1;
             let rel = entry_path
                 .strip_prefix(&root)
                 .unwrap_or(entry_path)
                 .to_path_buf();
-            let bytes = match fs::read(entry_path) {
-                Ok(bytes) => bytes,
-                Err(err) => {
-                    eprintln!("skipped {}: {}", entry_path.display(), err);
-                    continue;
+            match ingest_source_from_path(&ctx_path, &root, &rel, entry_path, layer, with_content)
+                .await
+            {
+                IngestOutcomeKind::Decoded {
+                    outcome,
+                    bytes_read,
+                } => {
+                    summary.files_decoded += 1;
+                    summary.bytes_read += bytes_read;
+                    summary.units_written += 1;
+                    summary.chunks_written += outcome.chunks_written;
+                    summary.entities_written += outcome.entities_written;
+                    total.chunks_written += outcome.chunks_written;
+                    total.entities_written += outcome.entities_written;
                 }
-            };
-            let outcome =
-                match add_source_file(&ctx_path, &root, &rel, &bytes, layer, with_content).await {
-                    Ok(outcome) => outcome,
-                    Err(err) => {
-                        eprintln!("skipped {}: {}", entry_path.display(), err);
-                        continue;
-                    }
-                };
-            total.chunks_written += outcome.chunks_written;
-            total.entities_written += outcome.entities_written;
+                IngestOutcomeKind::TooLarge { size } => {
+                    summary.files_skipped_too_large += 1;
+                    eprintln!(
+                        "skipped {}: file size {} exceeds binary decoder cap",
+                        entry_path.display(),
+                        size
+                    );
+                }
+                IngestOutcomeKind::ReadError(err) => {
+                    summary.files_skipped_read_error += 1;
+                    eprintln!("skipped {}: {err:#}", entry_path.display());
+                }
+                IngestOutcomeKind::DecodeError(err) => {
+                    summary.files_skipped_decode_error += 1;
+                    eprintln!("skipped {}: {err:#}", entry_path.display());
+                }
+                IngestOutcomeKind::EncodingError(err) => {
+                    summary.files_skipped_encoding_error += 1;
+                    eprintln!("skipped {}: {err:#}", entry_path.display());
+                }
+            }
         }
+        eprintln!("{}", summary.format_oneline());
         return Ok(total);
     }
 
@@ -134,8 +174,15 @@ pub async fn add_to_context(
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from("/"));
     let rel = PathBuf::from(abs.file_name().context("file without a name")?);
-    let bytes = fs::read(&abs).with_context(|| format!("failed to read {}", abs.display()))?;
-    add_source_file(&ctx_path, &root, &rel, &bytes, layer, with_content).await
+    match ingest_source_from_path(&ctx_path, &root, &rel, &abs, layer, with_content).await {
+        IngestOutcomeKind::Decoded { outcome, .. } => Ok(outcome),
+        IngestOutcomeKind::TooLarge { size } => {
+            bail!("file size {size} exceeds binary decoder cap")
+        }
+        IngestOutcomeKind::ReadError(err)
+        | IngestOutcomeKind::DecodeError(err)
+        | IngestOutcomeKind::EncodingError(err) => Err(err),
+    }
 }
 
 pub async fn add_content_to_context(
@@ -181,24 +228,49 @@ pub async fn update_context(context: &str) -> Result<ContextStatus> {
         }
     }
 
+    let mut summary = IngestionSummary::default();
     for (root, source_rel, layer) in targets {
         let abs = root.join(&source_rel);
         if !abs.exists() {
             continue;
         }
-        let bytes = match fs::read(&abs) {
-            Ok(bytes) => bytes,
-            Err(err) => {
-                eprintln!("skipped {}: {}", abs.display(), err);
-                continue;
-            }
-        };
-        if let Err(err) =
-            add_source_file(&ctx_path, &root, &source_rel, &bytes, layer, with_content).await
+        summary.files_seen += 1;
+        match ingest_source_from_path(&ctx_path, &root, &source_rel, &abs, layer, with_content)
+            .await
         {
-            eprintln!("skipped {}: {}", abs.display(), err);
+            IngestOutcomeKind::Decoded {
+                outcome,
+                bytes_read,
+            } => {
+                summary.files_decoded += 1;
+                summary.bytes_read += bytes_read;
+                summary.units_written += 1;
+                summary.chunks_written += outcome.chunks_written;
+                summary.entities_written += outcome.entities_written;
+            }
+            IngestOutcomeKind::TooLarge { size } => {
+                summary.files_skipped_too_large += 1;
+                eprintln!(
+                    "skipped {}: file size {} exceeds binary decoder cap",
+                    abs.display(),
+                    size
+                );
+            }
+            IngestOutcomeKind::ReadError(err) => {
+                summary.files_skipped_read_error += 1;
+                eprintln!("skipped {}: {err:#}", abs.display());
+            }
+            IngestOutcomeKind::DecodeError(err) => {
+                summary.files_skipped_decode_error += 1;
+                eprintln!("skipped {}: {err:#}", abs.display());
+            }
+            IngestOutcomeKind::EncodingError(err) => {
+                summary.files_skipped_encoding_error += 1;
+                eprintln!("skipped {}: {err:#}", abs.display());
+            }
         }
     }
+    eprintln!("{}", summary.format_oneline());
 
     let mut manifest = Manifest::load(&ctx_path)?;
     refresh_aura_registry(&ctx_path, &mut manifest)?;
@@ -332,76 +404,84 @@ async fn bootstrap_procedural(context: &str) -> Result<()> {
     Ok(())
 }
 
-/// Top-level ingestion entry for a filesystem-backed source file. Hashes `bytes` once, decodes
-/// into one or more units, ingests each, and removes any manifest/index records left over from
-/// an earlier decode that no longer appear in the new unit set.
-async fn add_source_file(
+/// Returns `true` when every manifest entry for `(root, source_rel)` already has the matching
+/// `source_hash` and required blob state, meaning there's nothing to ingest.
+fn already_fully_indexed(
+    ctx_path: &Path,
+    root_str: &str,
+    source_rel_str: &str,
+    source_hash: &str,
+    with_content: bool,
+) -> Result<bool> {
+    let manifest = Manifest::load(ctx_path)?;
+    let raw_enabled = manifest.config.store_raw_content || with_content;
+    if let Some(source) = manifest.sources.iter().find(|s| s.root == root_str) {
+        let entries: Vec<&ManifestEntry> = source
+            .files
+            .iter()
+            .filter(|entry| entry.effective_source_path() == source_rel_str)
+            .collect();
+        if !entries.is_empty()
+            && entries.iter().all(|entry| {
+                entry.hash_at_index == source_hash && (!raw_enabled || entry.blob_ref.is_some())
+            })
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Ingest a single decoded unit, recording its relative path so the caller can later reconcile
+/// orphan manifest entries from earlier decodes.
+async fn ingest_one_unit(
     ctx_path: &Path,
     root: &Path,
     source_rel: &Path,
-    bytes: &[u8],
+    unit: DecodedUnit,
+    source_hash: &str,
     layer: Option<ContentLayer>,
     with_content: bool,
-) -> Result<AddOutcome> {
-    let source_hash = hash_bytes(bytes);
+    new_unit_paths: &mut Vec<String>,
+    total: &mut AddOutcome,
+) -> Result<()> {
+    let unit_rel = if unit.virtual_path.as_os_str().is_empty() {
+        source_rel.to_path_buf()
+    } else {
+        source_rel.join(&unit.virtual_path)
+    };
+    let source_path_for_entry = if unit.virtual_path.as_os_str().is_empty() {
+        None
+    } else {
+        Some(source_rel)
+    };
+    new_unit_paths.push(unit_rel.display().to_string());
+
+    let outcome = add_file_buffer(
+        ctx_path,
+        root,
+        &unit_rel,
+        &unit.text,
+        layer,
+        with_content,
+        source_hash,
+        source_path_for_entry,
+    )
+    .await?;
+    total.chunks_written += outcome.chunks_written;
+    total.entities_written += outcome.entities_written;
+    Ok(())
+}
+
+/// Remove manifest/index entries under `(root, source_rel)` whose paths no longer appear in the
+/// latest decode's unit set. Runs at the end of every successful ingest.
+fn prune_orphan_units(
+    ctx_path: &Path,
+    root: &Path,
+    source_rel_str: &str,
+    new_unit_paths: &[String],
+) -> Result<()> {
     let root_str = root.display().to_string();
-    let source_rel_str = source_rel.display().to_string();
-
-    {
-        let manifest = Manifest::load(ctx_path)?;
-        let raw_enabled = manifest.config.store_raw_content || with_content;
-        if let Some(source) = manifest.sources.iter().find(|s| s.root == root_str) {
-            let entries: Vec<&ManifestEntry> = source
-                .files
-                .iter()
-                .filter(|entry| entry.effective_source_path() == source_rel_str)
-                .collect();
-            if !entries.is_empty()
-                && entries.iter().all(|entry| {
-                    entry.hash_at_index == source_hash
-                        && (!raw_enabled || entry.blob_ref.is_some())
-                })
-            {
-                return Ok(AddOutcome::default());
-            }
-        }
-    }
-
-    let source_abs = root.join(source_rel);
-    let units = decode_file(&source_abs, bytes)
-        .with_context(|| format!("failed to decode {}", source_abs.display()))?;
-
-    let mut total = AddOutcome::default();
-    let mut new_unit_paths: Vec<String> = Vec::with_capacity(units.len());
-
-    for unit in units {
-        let unit_rel = if unit.virtual_path.as_os_str().is_empty() {
-            source_rel.to_path_buf()
-        } else {
-            source_rel.join(&unit.virtual_path)
-        };
-        let source_path_for_entry = if unit.virtual_path.as_os_str().is_empty() {
-            None
-        } else {
-            Some(source_rel)
-        };
-        new_unit_paths.push(unit_rel.display().to_string());
-
-        let outcome = add_file_buffer(
-            ctx_path,
-            root,
-            &unit_rel,
-            &unit.text,
-            layer,
-            with_content,
-            &source_hash,
-            source_path_for_entry,
-        )
-        .await?;
-        total.chunks_written += outcome.chunks_written;
-        total.entities_written += outcome.entities_written;
-    }
-
     let orphan_paths: Vec<String> = {
         let manifest = Manifest::load(ctx_path)?;
         manifest
@@ -421,24 +501,128 @@ async fn add_source_file(
             })
             .unwrap_or_default()
     };
-    if !orphan_paths.is_empty() {
-        let mut manifest = Manifest::load(ctx_path)?;
-        if let Some(source) = manifest.source_for_mut(&root_str) {
-            source
-                .files
-                .retain(|entry| !orphan_paths.contains(&entry.path));
+    if orphan_paths.is_empty() {
+        return Ok(());
+    }
+    let mut manifest = Manifest::load(ctx_path)?;
+    if let Some(source) = manifest.source_for_mut(&root_str) {
+        source
+            .files
+            .retain(|entry| !orphan_paths.contains(&entry.path));
+    }
+    manifest.save(ctx_path)?;
+    let env = get_or_open_env(&index_path(ctx_path))?;
+    env.update_state(|state| {
+        for orphan in &orphan_paths {
+            let orphan_source_id = root.join(orphan).display().to_string();
+            state.remove_source(&orphan_source_id);
         }
-        manifest.save(ctx_path)?;
-        let env = get_or_open_env(&index_path(ctx_path))?;
-        env.update_state(|state| {
-            for orphan in &orphan_paths {
-                let orphan_source_id = root.join(orphan).display().to_string();
-                state.remove_source(&orphan_source_id);
-            }
-            Ok(())
-        })?;
+        Ok(())
+    })?;
+    Ok(())
+}
+
+/// Top-level ingestion entry for a filesystem-backed source file. Hashes `bytes` once, decodes
+/// into one or more units, ingests each, and removes any manifest/index records left over from
+/// an earlier decode that no longer appear in the new unit set.
+async fn add_source_file(
+    ctx_path: &Path,
+    root: &Path,
+    source_rel: &Path,
+    bytes: &[u8],
+    layer: Option<ContentLayer>,
+    with_content: bool,
+) -> Result<AddOutcome> {
+    let source_hash = hash_bytes(bytes);
+    let root_str = root.display().to_string();
+    let source_rel_str = source_rel.display().to_string();
+
+    if already_fully_indexed(
+        ctx_path,
+        &root_str,
+        &source_rel_str,
+        &source_hash,
+        with_content,
+    )? {
+        return Ok(AddOutcome::default());
     }
 
+    let source_abs = root.join(source_rel);
+    let units = decode_file(&source_abs, bytes)
+        .with_context(|| format!("failed to decode {}", source_abs.display()))?;
+
+    let mut total = AddOutcome::default();
+    let mut new_unit_paths: Vec<String> = Vec::with_capacity(units.len());
+
+    for unit in units {
+        ingest_one_unit(
+            ctx_path,
+            root,
+            source_rel,
+            unit,
+            &source_hash,
+            layer,
+            with_content,
+            &mut new_unit_paths,
+            &mut total,
+        )
+        .await?;
+    }
+
+    prune_orphan_units(ctx_path, root, &source_rel_str, &new_unit_paths)?;
+    Ok(total)
+}
+
+/// Streaming ingestion for large plain-text sources. Hashes the file in a first streaming pass,
+/// fast-paths if unchanged, then stream-decodes plain text into multiple `chunk-NNNN.txt`
+/// virtual units without ever holding the full file in memory.
+async fn add_source_file_streamed(
+    ctx_path: &Path,
+    root: &Path,
+    source_rel: &Path,
+    source_abs: &Path,
+    layer: Option<ContentLayer>,
+    with_content: bool,
+) -> Result<AddOutcome> {
+    let source_hash = hash_file_streaming(source_abs)?;
+    let root_str = root.display().to_string();
+    let source_rel_str = source_rel.display().to_string();
+
+    if already_fully_indexed(
+        ctx_path,
+        &root_str,
+        &source_rel_str,
+        &source_hash,
+        with_content,
+    )? {
+        return Ok(AddOutcome::default());
+    }
+
+    let file = File::open(source_abs).with_context(|| format!("open {}", source_abs.display()))?;
+    let reader = BufReader::new(file);
+    let mut stream = PlainTextUnitStream::new(reader);
+
+    let mut total = AddOutcome::default();
+    let mut new_unit_paths: Vec<String> = Vec::new();
+    while let Some(unit) = stream
+        .next_unit()
+        .with_context(|| format!("stream-decode {}", source_abs.display()))?
+    {
+        ingest_one_unit(
+            ctx_path,
+            root,
+            source_rel,
+            unit,
+            &source_hash,
+            layer,
+            with_content,
+            &mut new_unit_paths,
+            &mut total,
+        )
+        .await?;
+    }
+
+    prune_orphan_units(ctx_path, root, &source_rel_str, &new_unit_paths)?;
     Ok(total)
 }
 
@@ -599,7 +783,33 @@ fn ensure_context_for_add(context: &str) -> Result<PathBuf> {
     Ok(ctx_path)
 }
 
-fn should_skip_path(path: &Path) -> bool {
+/// Known-binary extensions skipped during directory walks. Plain-text adjacent formats
+/// (json, yaml, toml, xml, md, csv) are intentionally absent: the text pipeline handles them.
+const DENIED_EXTENSIONS: &[&str] = &[
+    // images
+    "jpg", "jpeg", "png", "gif", "webp", "bmp", "tiff", "tif", "ico", "heic", "avif", "psd",
+    // audio / video
+    "mp3", "wav", "flac", "ogg", "m4a", "aac", "mp4", "mov", "avi", "mkv", "webm", "wmv",
+    // archives
+    "zip", "tar", "gz", "tgz", "bz2", "xz", "7z", "rar", "z",
+    // binaries / objects / packages
+    "exe", "dll", "so", "dylib", "o", "a", "lib", "class", "jar", "war", "ear", "wasm", "pyc",
+    "pyo", "bin", "deb", "rpm", "dmg", "iso", "apk", "ipa", // fonts
+    "ttf", "otf", "woff", "woff2", "eot", // databases
+    "db", "sqlite", "sqlite3", "mdb", "accdb",
+];
+
+/// Outcome of the pre-walk skip check. Callers distinguish denylist hits (worth counting in the
+/// summary) from VCS/junk paths (normal walk hygiene, uncounted).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SkipCheck {
+    Keep,
+    InfrastructureDir,
+    JunkFile,
+    DeniedExtension,
+}
+
+fn classify_path(path: &Path) -> SkipCheck {
     use std::ffi::OsStr;
 
     if path.components().any(|component| {
@@ -608,14 +818,29 @@ fn should_skip_path(path: &Path) -> bool {
             Some(".git" | ".ctx" | "target" | "node_modules")
         )
     }) {
-        return true;
+        return SkipCheck::InfrastructureDir;
     }
 
-    // macOS / Windows junk files (binary or non-UTF-8)
-    match path.file_name() {
-        Some(name) if name == OsStr::new(".DS_Store") || name == OsStr::new("Thumbs.db") => true,
-        _ => false,
+    if let Some(ext) = path.extension().and_then(|ext| ext.to_str()) {
+        if DENIED_EXTENSIONS
+            .iter()
+            .any(|known| ext.eq_ignore_ascii_case(known))
+        {
+            return SkipCheck::DeniedExtension;
+        }
     }
+
+    match path.file_name() {
+        Some(name) if name == OsStr::new(".DS_Store") || name == OsStr::new("Thumbs.db") => {
+            SkipCheck::JunkFile
+        }
+        _ => SkipCheck::Keep,
+    }
+}
+
+#[cfg(test)]
+fn should_skip_path(path: &Path) -> bool {
+    !matches!(classify_path(path), SkipCheck::Keep)
 }
 
 fn parse_layer(value: &str) -> Result<ContentLayer> {
@@ -634,6 +859,120 @@ fn hash_bytes(bytes: &[u8]) -> String {
 
 fn hash_file(path: &Path) -> Result<String> {
     Ok(hash_bytes(&fs::read(path)?))
+}
+
+/// Streaming SHA-256 of a file. Reads in 64 KiB blocks so even multi-gigabyte files hash
+/// without ballooning memory.
+fn hash_file_streaming(path: &Path) -> Result<String> {
+    let mut file = File::open(path).with_context(|| format!("open {}", path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let n = file
+            .read(&mut buf)
+            .with_context(|| format!("read {}", path.display()))?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(format!("sha256:{:x}", hasher.finalize()))
+}
+
+/// Decide whether `(abs_path, size)` should be ingested via the streaming plain-text path. We
+/// peek at [`PEEK_SNIFF_BYTES`] of content to let binary decoders claim before we commit to
+/// streaming.
+fn should_stream_plain_text(abs_path: &Path, rel: &Path, size: u64) -> bool {
+    if size <= PLAIN_TEXT_STREAM_THRESHOLD {
+        return false;
+    }
+    let Ok(mut file) = File::open(abs_path) else {
+        return false;
+    };
+    let mut peek = vec![0u8; PEEK_SNIFF_BYTES.min(size as usize)];
+    let read = match file.read(&mut peek) {
+        Ok(n) => n,
+        Err(_) => return false,
+    };
+    peek.truncate(read);
+    !any_binary_decoder_claims(rel, &peek)
+}
+
+/// Pre-categorized ingest outcome. Batch callers use the discriminator to bucket skips into the
+/// correct [`IngestionSummary`] counter without having to sniff error messages themselves.
+enum IngestOutcomeKind {
+    Decoded {
+        outcome: AddOutcome,
+        bytes_read: u64,
+    },
+    TooLarge {
+        size: u64,
+    },
+    ReadError(anyhow::Error),
+    DecodeError(anyhow::Error),
+    EncodingError(anyhow::Error),
+}
+
+/// Dispatches a filesystem-backed source file through either the in-memory or streaming ingest
+/// path based on size and peek-sniff. Returns a categorized outcome so batch callers can
+/// attribute skips without error-message sniffing.
+async fn ingest_source_from_path(
+    ctx_path: &Path,
+    root: &Path,
+    source_rel: &Path,
+    abs: &Path,
+    layer: Option<ContentLayer>,
+    with_content: bool,
+) -> IngestOutcomeKind {
+    let metadata = match fs::metadata(abs) {
+        Ok(m) => m,
+        Err(err) => {
+            return IngestOutcomeKind::ReadError(
+                anyhow::Error::new(err).context(format!("stat {}", abs.display())),
+            );
+        }
+    };
+    let size = metadata.len();
+    let stream = should_stream_plain_text(abs, source_rel, size);
+
+    if !stream && size > extraction::decoder::MAX_BINARY_DECODER_BYTES {
+        return IngestOutcomeKind::TooLarge { size };
+    }
+
+    let result = if stream {
+        add_source_file_streamed(ctx_path, root, source_rel, abs, layer, with_content).await
+    } else {
+        match fs::read(abs) {
+            Ok(bytes) => {
+                add_source_file(ctx_path, root, source_rel, &bytes, layer, with_content).await
+            }
+            Err(err) => {
+                return IngestOutcomeKind::ReadError(
+                    anyhow::Error::new(err).context(format!("failed to read {}", abs.display())),
+                );
+            }
+        }
+    };
+
+    match result {
+        Ok(outcome) => IngestOutcomeKind::Decoded {
+            outcome,
+            bytes_read: size,
+        },
+        Err(err) => categorize_ingest_error(err),
+    }
+}
+
+/// Inspect an ingest error and bucket it into one of the summary skip categories. Encoding
+/// failures come from `PlainTextDecoder` with messages like "failed to decode as utf-8 text";
+/// anything else counts as a generic decoder failure.
+fn categorize_ingest_error(err: anyhow::Error) -> IngestOutcomeKind {
+    let message = format!("{err:#}").to_lowercase();
+    if message.contains("decode as utf-") {
+        IngestOutcomeKind::EncodingError(err)
+    } else {
+        IngestOutcomeKind::DecodeError(err)
+    }
 }
 
 // -------------------------------- drift --------------------------------
@@ -1047,6 +1386,74 @@ pub(crate) mod test_support {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn should_skip_denied_extensions() {
+        for ext in [
+            "jpg", "JPEG", "png", "mp4", "mp3", "zip", "tar.gz", "exe", "dll", "so", "wasm", "ttf",
+            "woff2", "sqlite",
+        ] {
+            // For multi-dot extensions (tar.gz), Path::extension returns only the final piece.
+            let leaf = format!("asset.{ext}");
+            let path = Path::new(&leaf);
+            assert!(
+                should_skip_path(path),
+                "expected .{ext} to be skipped ({})",
+                path.display()
+            );
+        }
+    }
+
+    #[test]
+    fn should_not_skip_indexable_extensions() {
+        for name in [
+            "README.md",
+            "notes.txt",
+            "data.json",
+            "config.yaml",
+            "pyproject.toml",
+            "feed.xml",
+            "table.csv",
+            "report.pdf",
+            "book.epub",
+            "notebook.ipynb",
+            "deck.pptx",
+            "memo.docx",
+            "style.rtf",
+            "page.html",
+            "sheet.xlsx",
+            "lib.rs",
+            "main.py",
+        ] {
+            let path = Path::new(name);
+            assert!(
+                !should_skip_path(path),
+                "expected {name} to pass the denylist"
+            );
+        }
+    }
+
+    #[test]
+    fn hash_file_streaming_matches_slurp_hash() {
+        let tempdir = TempDir::new().expect("tempdir");
+        let path = tempdir.path().join("payload.bin");
+        let data: Vec<u8> = (0u8..=255).cycle().take(200_000).collect();
+        fs::write(&path, &data).expect("write payload");
+        let streamed = hash_file_streaming(&path).expect("stream hash");
+        let slurped = hash_file(&path).expect("slurp hash");
+        assert_eq!(streamed, slurped);
+    }
+
+    #[test]
+    fn should_skip_junk_and_vcs() {
+        assert!(should_skip_path(Path::new("project/.git/HEAD")));
+        assert!(should_skip_path(Path::new("project/target/debug/app")));
+        assert!(should_skip_path(Path::new(
+            "project/node_modules/pkg/index.js"
+        )));
+        assert!(should_skip_path(Path::new(".DS_Store")));
+        assert!(should_skip_path(Path::new("docs/Thumbs.db")));
+    }
 
     #[tokio::test]
     async fn inline_semantic_round_trip() {

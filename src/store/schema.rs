@@ -8,6 +8,52 @@ pub struct AddOutcome {
     pub entities_written: usize,
 }
 
+/// Per-batch ingestion telemetry reported at the end of `add`/`update` runs. Batched walks
+/// accumulate these counters and emit a one-line summary so operators can see at a glance how
+/// many files were decoded vs skipped and why, without scanning per-file warning spam.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct IngestionSummary {
+    pub files_seen: usize,
+    pub files_decoded: usize,
+    pub files_skipped_denylist: usize,
+    pub files_skipped_too_large: usize,
+    pub files_skipped_read_error: usize,
+    pub files_skipped_decode_error: usize,
+    pub files_skipped_encoding_error: usize,
+    pub units_written: usize,
+    pub chunks_written: usize,
+    pub entities_written: usize,
+    pub bytes_read: u64,
+}
+
+impl IngestionSummary {
+    /// Total files that were not decoded, across all skip categories.
+    pub fn files_skipped(&self) -> usize {
+        self.files_skipped_denylist
+            + self.files_skipped_too_large
+            + self.files_skipped_read_error
+            + self.files_skipped_decode_error
+            + self.files_skipped_encoding_error
+    }
+
+    /// Human-readable one-line summary for CLI output.
+    pub fn format_oneline(&self) -> String {
+        format!(
+            "decoded {} / skipped {} (denylist {}, too-large {}, read-err {}, decode-err {}, encoding-err {}) | units {} chunks {} entities {}",
+            self.files_decoded,
+            self.files_skipped(),
+            self.files_skipped_denylist,
+            self.files_skipped_too_large,
+            self.files_skipped_read_error,
+            self.files_skipped_decode_error,
+            self.files_skipped_encoding_error,
+            self.units_written,
+            self.chunks_written,
+            self.entities_written,
+        )
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct IndexCounts {
     pub chunk_count: usize,
