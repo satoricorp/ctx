@@ -4,13 +4,14 @@
 //! unit per page; [`XlsxDecoder`] produces one unit per worksheet; [`HtmlDecoder`] strips HTML
 //! markup; [`JupyterDecoder`] extracts markdown + source cells from `.ipynb`;
 //! [`RtfDecoder`] flattens RTF to plain text; [`DocxDecoder`] extracts body text from Word
-//! documents; [`PptxDecoder`] produces one unit per slide; [`PlainTextDecoder`] is the fallback
-//! that passes UTF-8 files through unchanged.
+//! documents; [`PptxDecoder`] produces one unit per slide; [`EpubDecoder`] produces one unit per
+//! spine item; [`PlainTextDecoder`] is the fallback that passes UTF-8 files through unchanged.
 
 use anyhow::{anyhow, Context, Result};
 use calamine::{Data, Range, Reader};
 use quick_xml::events::Event;
 use quick_xml::reader::Reader as XmlReader;
+use std::collections::HashMap;
 use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 
@@ -557,6 +558,145 @@ fn parse_slide_index(entry_name: &str) -> Option<u32> {
     digits.parse().ok()
 }
 
+/// EPUB decoder. Walks the OPF spine in reading order, rendering each chapter's XHTML through the
+/// same HTML-to-text path as [`HtmlDecoder`] so downstream chunking sees prose rather than markup.
+/// Produces one [`DecodedUnit`] per non-empty spine item with a zero-padded
+/// `chapter-NNN.md` virtual path.
+pub struct EpubDecoder;
+
+impl Decoder for EpubDecoder {
+    fn can_decode(&self, path: &Path, _bytes: &[u8]) -> bool {
+        matches_extension(path, &["epub"])
+    }
+
+    fn decode(&self, path: &Path, bytes: &[u8]) -> Result<Vec<DecodedUnit>> {
+        let cursor = Cursor::new(bytes);
+        let mut archive = zip::ZipArchive::new(cursor)
+            .map_err(|err| anyhow!("epub zip open failed for {}: {err}", path.display()))?;
+
+        let container_xml = read_zip_entry_in(&mut archive, "META-INF/container.xml")
+            .with_context(|| format!("reading META-INF/container.xml from {}", path.display()))?;
+        let opf_path = find_opf_path(&container_xml)
+            .ok_or_else(|| anyhow!("no rootfile in container.xml for {}", path.display()))?;
+
+        let opf_xml = read_zip_entry_in(&mut archive, &opf_path)
+            .with_context(|| format!("reading {} from {}", opf_path, path.display()))?;
+        let opf = parse_opf(&opf_xml)
+            .with_context(|| format!("parsing {} from {}", opf_path, path.display()))?;
+
+        let base_dir = Path::new(&opf_path).parent().map(Path::to_path_buf);
+        let pad_width = page_pad_width(opf.spine.len());
+
+        let mut units: Vec<DecodedUnit> = Vec::new();
+        for (idx, idref) in opf.spine.iter().enumerate() {
+            let Some(href) = opf.manifest.get(idref) else {
+                continue;
+            };
+            let resolved = match &base_dir {
+                Some(dir) => dir
+                    .join(href)
+                    .to_string_lossy()
+                    .replace(std::path::MAIN_SEPARATOR, "/"),
+                None => href.clone(),
+            };
+            let xhtml = read_zip_entry_in(&mut archive, &resolved).with_context(|| {
+                format!("reading spine item {} from {}", resolved, path.display())
+            })?;
+            let text = html2text::from_read(xhtml.as_bytes(), HTML_RENDER_WIDTH)
+                .map_err(|err| anyhow!("epub html render for {}: {err}", resolved))?;
+            if text.trim().is_empty() {
+                continue;
+            }
+            units.push(DecodedUnit {
+                virtual_path: PathBuf::from(format!(
+                    "chapter-{:0>width$}.md",
+                    idx + 1,
+                    width = pad_width,
+                )),
+                text,
+            });
+        }
+        Ok(units)
+    }
+}
+
+/// Minimal OPF projection: the ordered spine of idrefs plus the manifest `id → href` lookup.
+struct OpfPackage {
+    manifest: HashMap<String, String>,
+    spine: Vec<String>,
+}
+
+/// Pull the `full-path` attribute from the first `<rootfile>` in `META-INF/container.xml`.
+fn find_opf_path(container_xml: &str) -> Option<String> {
+    let mut reader = XmlReader::from_str(container_xml);
+    reader.config_mut().trim_text(true);
+    let mut buf = Vec::new();
+    loop {
+        let event = reader.read_event_into(&mut buf).ok()?;
+        match event {
+            Event::Start(ref e) | Event::Empty(ref e)
+                if local_name_eq(e.name().as_ref(), b"rootfile") =>
+            {
+                for attr in e.attributes().flatten() {
+                    if attr.key.as_ref() == b"full-path" {
+                        return Some(String::from_utf8_lossy(&attr.value).into_owned());
+                    }
+                }
+            }
+            Event::Eof => return None,
+            _ => {}
+        }
+        buf.clear();
+    }
+}
+
+/// Walk an OPF package: collect manifest (`<item id="..." href="..."/>`) and spine
+/// (`<itemref idref="..."/>` in document order).
+fn parse_opf(opf_xml: &str) -> Result<OpfPackage> {
+    let mut reader = XmlReader::from_str(opf_xml);
+    reader.config_mut().trim_text(true);
+    let mut manifest: HashMap<String, String> = HashMap::new();
+    let mut spine: Vec<String> = Vec::new();
+    let mut buf = Vec::new();
+    loop {
+        match reader
+            .read_event_into(&mut buf)
+            .map_err(|err| anyhow!("opf parse error: {err}"))?
+        {
+            Event::Start(ref e) | Event::Empty(ref e) => {
+                if local_name_eq(e.name().as_ref(), b"item") {
+                    let mut id: Option<String> = None;
+                    let mut href: Option<String> = None;
+                    for attr in e.attributes().flatten() {
+                        match attr.key.as_ref() {
+                            b"id" => {
+                                id = Some(String::from_utf8_lossy(&attr.value).into_owned())
+                            }
+                            b"href" => {
+                                href = Some(String::from_utf8_lossy(&attr.value).into_owned())
+                            }
+                            _ => {}
+                        }
+                    }
+                    if let (Some(id), Some(href)) = (id, href) {
+                        manifest.insert(id, href);
+                    }
+                } else if local_name_eq(e.name().as_ref(), b"itemref") {
+                    for attr in e.attributes().flatten() {
+                        if attr.key.as_ref() == b"idref" {
+                            spine.push(String::from_utf8_lossy(&attr.value).into_owned());
+                        }
+                    }
+                }
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+        buf.clear();
+    }
+    Ok(OpfPackage { manifest, spine })
+}
+
 static PDF: PdfDecoder = PdfDecoder;
 static XLSX: XlsxDecoder = XlsxDecoder;
 static HTML: HtmlDecoder = HtmlDecoder;
@@ -564,6 +704,7 @@ static JUPYTER: JupyterDecoder = JupyterDecoder;
 static RTF: RtfDecoder = RtfDecoder;
 static DOCX: DocxDecoder = DocxDecoder;
 static PPTX: PptxDecoder = PptxDecoder;
+static EPUB: EpubDecoder = EpubDecoder;
 static PLAIN_TEXT: PlainTextDecoder = PlainTextDecoder;
 static DECODERS: &[&dyn Decoder] = &[
     &PDF,
@@ -573,6 +714,7 @@ static DECODERS: &[&dyn Decoder] = &[
     &RTF,
     &DOCX,
     &PPTX,
+    &EPUB,
     &PLAIN_TEXT,
 ];
 
@@ -793,6 +935,45 @@ mod tests {
         assert_eq!(parse_slide_index("ppt/slides/_rels/slide1.xml.rels"), None);
         assert_eq!(parse_slide_index("ppt/slideLayouts/slideLayout1.xml"), None);
         assert_eq!(parse_slide_index("ppt/slides/slide.xml"), None);
+    }
+
+    #[test]
+    fn epub_decoder_claims_by_extension() {
+        assert!(EpubDecoder.can_decode(Path::new("book.epub"), b""));
+        assert!(EpubDecoder.can_decode(Path::new("BOOK.EPUB"), b""));
+        assert!(!EpubDecoder.can_decode(Path::new("book.pdf"), b""));
+        assert!(!EpubDecoder.can_decode(Path::new("book.mobi"), b""));
+    }
+
+    #[test]
+    fn find_opf_path_reads_rootfile() {
+        let xml = r#"<?xml version="1.0"?>
+<container xmlns="urn:oasis:names:tc:opendocument:xmlns:container" version="1.0">
+  <rootfiles>
+    <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
+  </rootfiles>
+</container>"#;
+        assert_eq!(find_opf_path(xml), Some("OEBPS/content.opf".to_string()));
+    }
+
+    #[test]
+    fn parse_opf_collects_manifest_and_spine() {
+        let xml = r#"<?xml version="1.0"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0">
+  <manifest>
+    <item id="intro" href="Text/intro.xhtml" media-type="application/xhtml+xml"/>
+    <item id="ch1" href="Text/chapter1.xhtml" media-type="application/xhtml+xml"/>
+    <item id="cover-img" href="Images/cover.png" media-type="image/png"/>
+  </manifest>
+  <spine>
+    <itemref idref="intro"/>
+    <itemref idref="ch1"/>
+  </spine>
+</package>"#;
+        let pkg = parse_opf(xml).expect("parse");
+        assert_eq!(pkg.manifest.len(), 3);
+        assert_eq!(pkg.manifest.get("ch1").map(String::as_str), Some("Text/chapter1.xhtml"));
+        assert_eq!(pkg.spine, vec!["intro".to_string(), "ch1".to_string()]);
     }
 
     #[test]
