@@ -406,8 +406,8 @@ mod tests {
 
         let ctx_path = open_existing_context("promote-few").expect("open");
         let mut manifest = Manifest::load(&ctx_path).expect("load");
-        backdate_topic(&mut manifest, "aura/a.md", 30);
-        backdate_topic(&mut manifest, "aura/b.md", 30);
+        backdate_topic(&mut manifest, "aura/topics/a.md", 30);
+        backdate_topic(&mut manifest, "aura/topics/b.md", 30);
         manifest.save(&ctx_path).expect("save");
 
         let outcome =
@@ -470,7 +470,7 @@ mod tests {
         let ctx_path = open_existing_context("promote-idem").expect("open");
         let mut manifest = Manifest::load(&ctx_path).expect("load");
         for i in 0..3 {
-            backdate_topic(&mut manifest, &format!("aura/t{i}.md"), 30);
+            backdate_topic(&mut manifest, &format!("aura/topics/t{i}.md"), 30);
         }
         manifest.save(&ctx_path).expect("save");
 
@@ -517,7 +517,7 @@ mod tests {
 
         let mut manifest = Manifest::load(&ctx_path).expect("load");
         for i in 0..3 {
-            backdate_topic(&mut manifest, &format!("aura/t{i}.md"), 30);
+            backdate_topic(&mut manifest, &format!("aura/topics/t{i}.md"), 30);
         }
         // Also refresh the aura.md entry so our handcrafted hash matches the file on disk.
         let handcrafted_bytes = fs::read(&aura_md).expect("read aura.md");
@@ -560,7 +560,7 @@ mod tests {
         let ctx_path = open_existing_context("promote-unconf").expect("open");
         let mut manifest = Manifest::load(&ctx_path).expect("load");
         for i in 0..3 {
-            backdate_topic(&mut manifest, &format!("aura/t{i}.md"), 30);
+            backdate_topic(&mut manifest, &format!("aura/topics/t{i}.md"), 30);
         }
         manifest.save(&ctx_path).expect("save");
 
@@ -595,7 +595,7 @@ mod tests {
 
         let mut manifest = Manifest::load(&ctx_path).expect("load");
         for i in 0..3 {
-            backdate_topic(&mut manifest, &format!("aura/t{i}.md"), 30);
+            backdate_topic(&mut manifest, &format!("aura/topics/t{i}.md"), 30);
         }
         let seeded = fs::read(&aura_md).expect("read aura.md");
         if let Some(entry) = manifest

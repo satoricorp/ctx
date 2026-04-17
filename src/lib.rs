@@ -924,17 +924,18 @@ pub fn read_aura_summary(ctx_path: &Path) -> Result<AuraSummary> {
 /// Reads a single aura file. `rel_path` must start with `aura/` and must resolve inside
 /// the artifact's aura directory.
 pub fn read_aura_file(ctx_path: &Path, rel_path: &str) -> Result<AuraContent> {
-    let abs = resolve_aura_path(ctx_path, rel_path)?;
+    let canonical = canonical_aura_path(rel_path);
+    let abs = resolve_aura_path(ctx_path, &canonical)?;
     if !abs.exists() {
-        bail!("aura file {} does not exist", rel_path);
+        bail!("aura file {} does not exist", canonical);
     }
     let bytes = fs::read(&abs)
         .with_context(|| format!("read {}", abs.display()))?;
     let hash = hash_bytes(&bytes);
     let content = String::from_utf8(bytes)
-        .with_context(|| format!("aura file {} is not valid utf-8", rel_path))?;
+        .with_context(|| format!("aura file {} is not valid utf-8", canonical))?;
     Ok(AuraContent {
-        path: normalize_aura_path(rel_path),
+        path: canonical,
         content,
         hash,
     })
@@ -948,7 +949,8 @@ pub fn write_aura_file(
     mode: AuraWriteMode,
 ) -> Result<AuraWriteOutcome> {
     let ctx_path = open_existing_context(context)?;
-    let abs = resolve_aura_path(&ctx_path, rel_path)?;
+    let canonical = canonical_aura_path(rel_path);
+    let abs = resolve_aura_path(&ctx_path, &canonical)?;
 
     if let Some(parent) = abs.parent() {
         fs::create_dir_all(parent)?;
@@ -975,14 +977,13 @@ pub fn write_aura_file(
 
     let bytes = fs::read(&abs)?;
     let hash = hash_bytes(&bytes);
-    let normalized = normalize_aura_path(rel_path);
 
     let mut manifest = Manifest::load(&ctx_path)?;
-    manifest.upsert_aura(&normalized, &hash);
+    manifest.upsert_aura(&canonical, &hash);
     manifest.save(&ctx_path)?;
 
     Ok(AuraWriteOutcome {
-        path: normalized,
+        path: canonical,
         hash,
     })
 }
@@ -1000,9 +1001,11 @@ fn resolve_aura_path(ctx_path: &Path, rel_path: &str) -> Result<PathBuf> {
     let abs = ctx_path.join(&normalized);
     let aura_root = aura_path(ctx_path);
     let check_base = aura_root.canonicalize().unwrap_or(aura_root.clone());
+    // Walk up until we find an existing ancestor we can canonicalize; this lets us
+    // validate paths whose leaf directory has not been created yet (e.g. aura/topics/).
     let check_target = abs
-        .parent()
-        .map(|parent| parent.canonicalize().unwrap_or_else(|_| parent.to_path_buf()))
+        .ancestors()
+        .find_map(|anc| anc.canonicalize().ok())
         .unwrap_or_else(|| abs.clone());
     if !check_target.starts_with(&check_base) {
         bail!("aura path {} escapes the aura directory", rel_path);
@@ -1012,6 +1015,22 @@ fn resolve_aura_path(ctx_path: &Path, rel_path: &str) -> Result<PathBuf> {
 
 fn normalize_aura_path(rel_path: &str) -> String {
     rel_path.replace('\\', "/")
+}
+
+/// Canonicalizes an aura-relative path so root-level topic writes land under
+/// `aura/topics/`. Reserved files (`aura/aura.md`, `aura/index.md`) and paths
+/// that already include a subdirectory are returned unchanged.
+fn canonical_aura_path(rel_path: &str) -> String {
+    let normalized = normalize_aura_path(rel_path);
+    let segments: Vec<&str> = normalized.split('/').collect();
+    if segments.len() != 2 || segments[0] != "aura" {
+        return normalized;
+    }
+    let name = segments[1];
+    if name == "aura.md" || name == "index.md" {
+        return normalized;
+    }
+    format!("aura/topics/{name}")
 }
 
 #[cfg(test)]
@@ -1210,10 +1229,12 @@ mod tests {
             AuraWriteMode::Replace,
         )
         .expect("write aura file");
-        assert_eq!(outcome.path, "aura/auth.md");
+        assert_eq!(outcome.path, "aura/topics/auth.md");
         assert!(!outcome.hash.is_empty());
 
         let ctx_path = open_existing_context("aura-write").expect("open context");
+        assert!(ctx_path.join("aura/topics/auth.md").exists());
+        assert!(!ctx_path.join("aura/auth.md").exists());
         let content = read_aura_file(&ctx_path, "aura/auth.md").expect("read aura file");
         assert!(content.content.contains("RS256 tokens only"));
         assert_eq!(content.hash, outcome.hash);
@@ -1223,7 +1244,7 @@ mod tests {
             .aura
             .files
             .iter()
-            .find(|entry| entry.path == "aura/auth.md")
+            .find(|entry| entry.path == "aura/topics/auth.md")
             .expect("manifest entry");
         assert_eq!(entry.hash, outcome.hash);
 
@@ -1259,10 +1280,10 @@ mod tests {
         let summary = read_aura_summary(&ctx_path).expect("read summary");
         assert!(summary.index.is_some());
         assert!(summary.aura.is_some());
-        assert!(summary.topics.contains(&String::from("aura/deploy.md")));
+        assert!(summary.topics.contains(&String::from("aura/topics/deploy.md")));
 
         let content = read_aura_file(&ctx_path, "aura/deploy.md").expect("read file");
-        assert_eq!(content.path, "aura/deploy.md");
+        assert_eq!(content.path, "aura/topics/deploy.md");
         assert_eq!(content.content, "deploy steps");
     }
 
@@ -1418,6 +1439,30 @@ mod tests {
             .and_then(|source| source.files.first())
             .expect("entry post-update");
         assert_eq!(entry.hash, entry.hash_at_index);
+    }
+
+    #[test]
+    fn canonical_aura_path_redirects_root_topic() {
+        assert_eq!(canonical_aura_path("aura/foo.md"), "aura/topics/foo.md");
+        assert_eq!(canonical_aura_path("aura/bar.md"), "aura/topics/bar.md");
+    }
+
+    #[test]
+    fn canonical_aura_path_preserves_reserved() {
+        assert_eq!(canonical_aura_path("aura/aura.md"), "aura/aura.md");
+        assert_eq!(canonical_aura_path("aura/index.md"), "aura/index.md");
+    }
+
+    #[test]
+    fn canonical_aura_path_preserves_explicit_subdir() {
+        assert_eq!(
+            canonical_aura_path("aura/topics/foo.md"),
+            "aura/topics/foo.md"
+        );
+        assert_eq!(
+            canonical_aura_path("aura/scratch/foo.md"),
+            "aura/scratch/foo.md"
+        );
     }
 
     #[tokio::test]

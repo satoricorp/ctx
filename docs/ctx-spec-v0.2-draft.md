@@ -315,7 +315,7 @@ Aura MUST serve as the human-readable accumulation layer for agent context.
 
 ### 8.4 Topic files
 
-Topic files MAY be added to capture domain-specific, project-specific, or session-specific context.
+Topic files MAY be added to capture domain-specific, project-specific, or session-specific context. Topic files SHOULD live under `aura/topics/` so that only `aura/aura.md` and `aura/index.md` remain at the aura root.
 
 ### 8.5 Editability
 
@@ -538,7 +538,13 @@ example.ctx/
     "embedding_model": "fastembed:all-MiniLM-L6-v2"
   },
   "sources": [],
-  "aura": { "files": [] }
+  "aura": {
+    "files": [
+      { "path": "aura/index.md", "hash": "sha256:...", "updated_at": "2026-04-16T00:00:00Z" },
+      { "path": "aura/aura.md", "hash": "sha256:...", "updated_at": "2026-04-16T00:00:00Z" },
+      { "path": "aura/topics/auth.md", "hash": "sha256:...", "updated_at": "2026-04-16T00:00:00Z" }
+    ]
+  }
 }
 ```
 
