@@ -42,9 +42,9 @@ Binaries are built to `target/release/ctx` and `target/release/ctx-server`. Add 
 Typical flow:
 
 1. **`ctx init [name]`** — create a context and config under `~/.ctx` (or `CTX_PATH`).
-2. **`ctx add <path> [-c <context>] [--type semantic|procedural]`** — index files or trees.
+2. **`ctx add <path> [-c <context>] [--type semantic|procedural] [--with-content] [-v|--verbose]`** — index files or trees.
 3. **`ctx query <text> [-c <context>] [--type all|semantic|procedural] [--k <n>]`** — search indexed content.
-4. **`ctx update [-c <context>]`** — refresh indexes when files change.
+4. **`ctx update [-c <context>] [-v|--verbose]`** — refresh indexes when files change.
 5. **`ctx status [-c <context>]`** — see counts and dirty/pending state.
 
 Other useful commands:
@@ -54,6 +54,10 @@ Other useful commands:
 - **`ctx mcp --port 3000`** — MCP streamable HTTP server for local tooling.
 
 `ctx publish` and `ctx pull` are reserved for future artifact sync; they are not implemented yet.
+
+Batch ingestion behavior (`ctx add <dir>` and `ctx update`) now always prints a one-line summary at
+the end (`decoded / skipped ...`). Per-file skip diagnostics are hidden by default and shown only
+with `-v` / `--verbose`.
 
 ---
 
@@ -103,6 +107,9 @@ Routes include:
 | **`CTX_LLAMA_MAX_TOKENS`** | Optional local llama generation cap (default `768`). |
 | **`CTX_LLAMA_TIMEOUT_MS`** | Optional local llama timeout in milliseconds (default `45000`). |
 | **`CTX_LLAMA_N_CTX`** | Optional local llama context window (default `8192`). |
+| **`CTX_SEMANTIC_CHUNK_MERGE_MAX_TOKENS`** | Optional cap (`token_count`, rough chars÷4): merge adjacent semantic chunks until the next would exceed this budget. Default `0` (no merge). |
+| **`CTX_EMBEDDING_BATCH_SIZE`** | Max texts per OpenAI / FastEmbed embedding batch (default `256`, clamped 1–2048). |
+| **`CTX_SEMANTIC_INGEST_CONCURRENCY`** | Parallel semantic **LLM** extractions per document (default `4`). Embeddings run in one batched phase after extraction. |
 
 ---
 

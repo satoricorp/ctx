@@ -7,6 +7,8 @@ use crate::cli::scope::{apply_context_image_flag, ContextSelectArgs};
 pub struct UpdateArgs {
     #[command(flatten)]
     pub select: ContextSelectArgs,
+    #[arg(short = 'v', long = "verbose")]
+    pub verbose: bool,
 }
 
 pub async fn run(args: UpdateArgs) -> Result<()> {
@@ -16,7 +18,7 @@ pub async fn run(args: UpdateArgs) -> Result<()> {
         .context
         .clone()
         .unwrap_or(crate::artifact::infer_context_name()?);
-    let status = crate::update_context(&context).await?;
+    let status = crate::update_context_with_verbosity(&context, args.verbose).await?;
     println!("updated {}", status.name);
     Ok(())
 }

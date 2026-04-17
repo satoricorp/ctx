@@ -761,9 +761,8 @@ pub const MAX_BINARY_DECODER_BYTES: u64 = 256 * 1024 * 1024;
 /// Files larger than this get routed to the streaming plain-text path instead of slurped whole.
 pub const PLAIN_TEXT_STREAM_THRESHOLD: u64 = 8 * 1024 * 1024;
 
-/// Target size for each plain-text streaming unit. Flushed at a newline boundary, so actual
-/// units may overshoot slightly on files with very long lines.
-pub const PLAIN_TEXT_UNIT_BYTES: usize = 8 * 1024 * 1024;
+/// Target size for each plain-text streaming unit.
+pub const PLAIN_TEXT_UNIT_BYTES: usize = 1024 * 1024;
 
 /// Bytes read from the head of a file to decide whether any binary decoder will claim it.
 pub const PEEK_SNIFF_BYTES: usize = 4096;
@@ -775,10 +774,9 @@ pub fn any_binary_decoder_claims(path: &Path, peek: &[u8]) -> bool {
     binary.iter().any(|d| d.can_decode(path, peek))
 }
 
-/// Streaming plain-text chunker. Reads the underlying `BufRead` line-by-line, accumulating until
-/// the buffer exceeds `unit_bytes`, then yields a [`DecodedUnit`] with a `chunk-NNNN.txt` virtual
-/// path. The last partial buffer is emitted at EOF. Line-aligned flushes keep each chunk text
-/// a self-contained UTF-8 (or detected-encoding) string.
+/// Streaming plain-text chunker. Reads the underlying `BufRead` incrementally and yields
+/// [`DecodedUnit`]s with `chunk-NNNN.txt` virtual paths. It prefers newline-aligned flushes but
+/// force-flushes at `unit_bytes` if needed, so single giant lines cannot grow memory unbounded.
 pub struct PlainTextUnitStream<R: BufRead> {
     reader: R,
     unit_bytes: usize,
@@ -808,19 +806,36 @@ impl<R: BufRead> PlainTextUnitStream<R> {
             return Ok(None);
         }
         loop {
-            let mut line = Vec::new();
-            let n = self
+            let available = self
                 .reader
-                .read_until(b'\n', &mut line)
+                .fill_buf()
                 .map_err(|err| anyhow!("streaming read failed: {err}"))?;
-            if n == 0 {
+            if available.is_empty() {
                 self.done = true;
                 if self.buffer.is_empty() {
                     return Ok(None);
                 }
                 return Ok(Some(self.flush_buffer()?));
             }
-            self.buffer.extend_from_slice(&line);
+
+            if let Some(newline_pos) = available.iter().position(|byte| *byte == b'\n') {
+                let take = newline_pos + 1;
+                self.buffer.extend_from_slice(&available[..take]);
+                self.reader.consume(take);
+                if self.buffer.len() >= self.unit_bytes {
+                    return Ok(Some(self.flush_buffer()?));
+                }
+                continue;
+            }
+
+            if self.buffer.len() >= self.unit_bytes {
+                return Ok(Some(self.flush_buffer()?));
+            }
+
+            let remaining = self.unit_bytes.saturating_sub(self.buffer.len()).max(1);
+            let take = available.len().min(remaining);
+            self.buffer.extend_from_slice(&available[..take]);
+            self.reader.consume(take);
             if self.buffer.len() >= self.unit_bytes {
                 return Ok(Some(self.flush_buffer()?));
             }
@@ -956,6 +971,29 @@ mod tests {
         let reader = BufReader::new(&b""[..]);
         let mut stream = PlainTextUnitStream::new(reader);
         assert!(stream.next_unit().expect("stream").is_none());
+    }
+
+    #[test]
+    fn plain_text_stream_force_flushes_newline_free_input() {
+        use std::io::BufReader;
+        let source = "a".repeat(350_000);
+        let reader = BufReader::new(source.as_bytes());
+        let mut stream = PlainTextUnitStream::with_unit_bytes(reader, 100_000);
+        let mut units = Vec::new();
+        while let Some(unit) = stream.next_unit().expect("stream") {
+            units.push(unit);
+        }
+        assert!(
+            units.len() >= 4,
+            "expected forced chunking without newlines, got {}",
+            units.len()
+        );
+        assert!(
+            units.iter().all(|u| u.text.len() <= 100_000),
+            "unexpected oversized chunk in force-flush path"
+        );
+        let joined: String = units.iter().map(|u| u.text.as_str()).collect();
+        assert_eq!(joined, source);
     }
 
     #[test]

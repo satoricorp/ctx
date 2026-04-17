@@ -20,10 +20,12 @@ use extraction::decoder::{
     PLAIN_TEXT_STREAM_THRESHOLD,
 };
 use retrieval::query::{QueryResult, QueryType};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::fs::{self, File};
 use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
+use std::time::UNIX_EPOCH;
 use walkdir::WalkDir;
 
 use artifact::{
@@ -98,6 +100,16 @@ pub async fn add_to_context(
     layer: Option<ContentLayer>,
     with_content: bool,
 ) -> Result<AddOutcome> {
+    add_to_context_with_verbosity(context, path, layer, with_content, false).await
+}
+
+pub async fn add_to_context_with_verbosity(
+    context: &str,
+    path: &Path,
+    layer: Option<ContentLayer>,
+    with_content: bool,
+    verbose: bool,
+) -> Result<AddOutcome> {
     let ctx_path = ensure_context_for_add(context)?;
     let abs = path
         .canonicalize()
@@ -146,23 +158,31 @@ pub async fn add_to_context(
                 }
                 IngestOutcomeKind::TooLarge { size } => {
                     summary.files_skipped_too_large += 1;
-                    eprintln!(
-                        "skipped {}: file size {} exceeds binary decoder cap",
-                        entry_path.display(),
-                        size
-                    );
+                    if verbose {
+                        eprintln!(
+                            "skipped {}: file size {} exceeds binary decoder cap",
+                            entry_path.display(),
+                            size
+                        );
+                    }
                 }
                 IngestOutcomeKind::ReadError(err) => {
                     summary.files_skipped_read_error += 1;
-                    eprintln!("skipped {}: {err:#}", entry_path.display());
+                    if verbose {
+                        eprintln!("skipped {}: {err:#}", entry_path.display());
+                    }
                 }
                 IngestOutcomeKind::DecodeError(err) => {
                     summary.files_skipped_decode_error += 1;
-                    eprintln!("skipped {}: {err:#}", entry_path.display());
+                    if verbose {
+                        eprintln!("skipped {}: {err:#}", entry_path.display());
+                    }
                 }
                 IngestOutcomeKind::EncodingError(err) => {
                     summary.files_skipped_encoding_error += 1;
-                    eprintln!("skipped {}: {err:#}", entry_path.display());
+                    if verbose {
+                        eprintln!("skipped {}: {err:#}", entry_path.display());
+                    }
                 }
             }
         }
@@ -232,6 +252,10 @@ pub async fn rebuild_index(context: &str) -> Result<ContextStatus> {
 }
 
 pub async fn update_context(context: &str) -> Result<ContextStatus> {
+    update_context_with_verbosity(context, false).await
+}
+
+pub async fn update_context_with_verbosity(context: &str, verbose: bool) -> Result<ContextStatus> {
     let ctx_path = open_existing_context(context)?;
     let manifest = Manifest::load(&ctx_path)?;
     let with_content = manifest.config.store_raw_content;
@@ -273,23 +297,31 @@ pub async fn update_context(context: &str) -> Result<ContextStatus> {
             }
             IngestOutcomeKind::TooLarge { size } => {
                 summary.files_skipped_too_large += 1;
-                eprintln!(
-                    "skipped {}: file size {} exceeds binary decoder cap",
-                    abs.display(),
-                    size
-                );
+                if verbose {
+                    eprintln!(
+                        "skipped {}: file size {} exceeds binary decoder cap",
+                        abs.display(),
+                        size
+                    );
+                }
             }
             IngestOutcomeKind::ReadError(err) => {
                 summary.files_skipped_read_error += 1;
-                eprintln!("skipped {}: {err:#}", abs.display());
+                if verbose {
+                    eprintln!("skipped {}: {err:#}", abs.display());
+                }
             }
             IngestOutcomeKind::DecodeError(err) => {
                 summary.files_skipped_decode_error += 1;
-                eprintln!("skipped {}: {err:#}", abs.display());
+                if verbose {
+                    eprintln!("skipped {}: {err:#}", abs.display());
+                }
             }
             IngestOutcomeKind::EncodingError(err) => {
                 summary.files_skipped_encoding_error += 1;
-                eprintln!("skipped {}: {err:#}", abs.display());
+                if verbose {
+                    eprintln!("skipped {}: {err:#}", abs.display());
+                }
             }
         }
     }
@@ -465,6 +497,7 @@ async fn ingest_one_unit(
     source_hash: &str,
     layer: Option<ContentLayer>,
     with_content: bool,
+    source_stat: Option<SourceStat>,
     new_unit_paths: &mut Vec<String>,
     total: &mut AddOutcome,
 ) -> Result<()> {
@@ -489,6 +522,7 @@ async fn ingest_one_unit(
         with_content,
         source_hash,
         source_path_for_entry,
+        source_stat,
     )
     .await?;
     total.chunks_written += outcome.chunks_written;
@@ -586,6 +620,7 @@ async fn add_source_file(
             &source_hash,
             layer,
             with_content,
+            None,
             &mut new_unit_paths,
             &mut total,
         )
@@ -604,12 +639,24 @@ async fn add_source_file_streamed(
     root: &Path,
     source_rel: &Path,
     source_abs: &Path,
+    source_stat: SourceStat,
     layer: Option<ContentLayer>,
     with_content: bool,
 ) -> Result<AddOutcome> {
-    let source_hash = hash_file_streaming(source_abs)?;
     let root_str = root.display().to_string();
     let source_rel_str = source_rel.display().to_string();
+
+    if already_fully_indexed_by_stat(
+        ctx_path,
+        &root_str,
+        &source_rel_str,
+        source_stat,
+        with_content,
+    )? {
+        return Ok(AddOutcome::default());
+    }
+
+    let source_hash = hash_file_streaming(source_abs)?;
 
     if already_fully_indexed(
         ctx_path,
@@ -639,6 +686,7 @@ async fn add_source_file_streamed(
             &source_hash,
             layer,
             with_content,
+            Some(source_stat),
             &mut new_unit_paths,
             &mut total,
         )
@@ -661,6 +709,7 @@ async fn add_file_buffer(
     with_content: bool,
     source_hash: &str,
     source_path: Option<&Path>,
+    source_stat: Option<SourceStat>,
 ) -> Result<AddOutcome> {
     let root_str = root.display().to_string();
     let rel_str = rel_path.display().to_string();
@@ -708,8 +757,9 @@ async fn add_file_buffer(
         entry.r#type = chosen_layer.to_string();
         entry.blob_ref = entry_blob_ref;
         entry.source_path = source_path_str;
+        set_entry_source_stat(entry, source_stat);
     } else {
-        source.files.push(ManifestEntry {
+        let mut entry = ManifestEntry {
             path: rel_str,
             hash: source_hash.to_string(),
             hash_at_index: source_hash.to_string(),
@@ -718,7 +768,9 @@ async fn add_file_buffer(
             blob_ref: entry_blob_ref,
             source_path: source_path_str,
             extra: Default::default(),
-        });
+        };
+        set_entry_source_stat(&mut entry, source_stat);
+        source.files.push(entry);
     }
     manifest.save(ctx_path)?;
 
@@ -726,6 +778,23 @@ async fn add_file_buffer(
         chunks_written: chunk_count,
         entities_written: entity_count,
     })
+}
+
+fn set_entry_source_stat(entry: &mut ManifestEntry, source_stat: Option<SourceStat>) {
+    match source_stat {
+        Some(stat) => {
+            entry
+                .extra
+                .insert("source_size".into(), Value::from(stat.size));
+            entry
+                .extra
+                .insert("source_mtime_unix".into(), Value::from(stat.mtime_unix));
+        }
+        None => {
+            entry.extra.remove("source_size");
+            entry.extra.remove("source_mtime_unix");
+        }
+    }
 }
 
 /// Ingests raw content (typically from the `ctx_add` MCP tool) without writing a manifest entry.
@@ -902,6 +971,66 @@ fn hash_file_streaming(path: &Path) -> Result<String> {
     Ok(format!("sha256:{:x}", hasher.finalize()))
 }
 
+#[derive(Clone, Copy, Debug)]
+struct SourceStat {
+    size: u64,
+    mtime_unix: i64,
+}
+
+fn source_stat_from_metadata(metadata: &fs::Metadata) -> SourceStat {
+    let mtime_unix = metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or(0);
+    SourceStat {
+        size: metadata.len(),
+        mtime_unix,
+    }
+}
+
+/// Fast path for large streamed files: when `(size, mtime)` and manifest/index state all match,
+/// skip re-hashing and decoding.
+fn already_fully_indexed_by_stat(
+    ctx_path: &Path,
+    root_str: &str,
+    source_rel_str: &str,
+    source_stat: SourceStat,
+    with_content: bool,
+) -> Result<bool> {
+    let manifest = Manifest::load(ctx_path)?;
+    let raw_enabled = manifest.config.store_raw_content || with_content;
+    if let Some(source) = manifest.sources.iter().find(|s| s.root == root_str) {
+        let entries: Vec<&ManifestEntry> = source
+            .files
+            .iter()
+            .filter(|entry| entry.effective_source_path() == source_rel_str)
+            .collect();
+        if !entries.is_empty()
+            && entries.iter().all(|entry| {
+                let mtime = entry
+                    .extra
+                    .get("source_mtime_unix")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(i64::MIN);
+                let size = entry
+                    .extra
+                    .get("source_size")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(u64::MAX);
+                entry.hash == entry.hash_at_index
+                    && size == source_stat.size
+                    && mtime == source_stat.mtime_unix
+                    && (!raw_enabled || entry.blob_ref.is_some())
+            })
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 /// Decide whether `(abs_path, size)` should be ingested via the streaming plain-text path. We
 /// peek at [`PEEK_SNIFF_BYTES`] of content to let binary decoders claim before we commit to
 /// streaming.
@@ -956,6 +1085,7 @@ async fn ingest_source_from_path(
         }
     };
     let size = metadata.len();
+    let source_stat = source_stat_from_metadata(&metadata);
     let stream = should_stream_plain_text(abs, source_rel, size);
 
     if !stream && size > extraction::decoder::MAX_BINARY_DECODER_BYTES {
@@ -963,7 +1093,16 @@ async fn ingest_source_from_path(
     }
 
     let result = if stream {
-        add_source_file_streamed(ctx_path, root, source_rel, abs, layer, with_content).await
+        add_source_file_streamed(
+            ctx_path,
+            root,
+            source_rel,
+            abs,
+            source_stat,
+            layer,
+            with_content,
+        )
+        .await
     } else {
         match fs::read(abs) {
             Ok(bytes) => {
@@ -1017,8 +1156,7 @@ pub struct DriftState {
 }
 
 /// Hint surfaced to callers when drift is detected.
-pub const DRIFT_HINT: &str =
-    "context may be stale; run `ctx update` to re-index drifted files";
+pub const DRIFT_HINT: &str = "context may be stale; run `ctx update` to re-index drifted files";
 
 /// Manifest-only drift check. Cheap: no file I/O against source roots.
 pub fn drift_state(ctx_path: &Path) -> Result<DriftState> {
@@ -1036,7 +1174,9 @@ pub fn drift_state(ctx_path: &Path) -> Result<DriftState> {
             }
         }
     }
-    drifted_files.sort_by(|a, b| (a.root.as_str(), a.path.as_str()).cmp(&(b.root.as_str(), b.path.as_str())));
+    drifted_files.sort_by(|a, b| {
+        (a.root.as_str(), a.path.as_str()).cmp(&(b.root.as_str(), b.path.as_str()))
+    });
     Ok(DriftState {
         drift_detected: !drifted_files.is_empty(),
         drifted_files,
@@ -1089,37 +1229,36 @@ pub fn verify_context(name: &str) -> Result<VerifyReport> {
                 continue;
             };
             referenced.insert(blob_ref.trim_start_matches("sha256:").to_string());
-            let verified = match artifact::blob::read_verified(
-                &ctx_path,
-                blob_ref,
-                &entry.hash_at_index,
-            ) {
-                Ok(_) => VerifiedEntry {
-                    path: entry.path.clone(),
-                    blob_ref: blob_ref.to_string(),
-                    status: IntegrityStatus::Ok,
-                    reason: None,
-                },
-                Err(artifact::blob::IntegrityError::Missing(_)) => VerifiedEntry {
-                    path: entry.path.clone(),
-                    blob_ref: blob_ref.to_string(),
-                    status: IntegrityStatus::Missing,
-                    reason: None,
-                },
-                Err(err @ artifact::blob::IntegrityError::BlobDigest { .. })
-                | Err(err @ artifact::blob::IntegrityError::ContentDigest { .. }) => VerifiedEntry {
-                    path: entry.path.clone(),
-                    blob_ref: blob_ref.to_string(),
-                    status: IntegrityStatus::Tampered,
-                    reason: Some(err.to_string()),
-                },
-                Err(err @ artifact::blob::IntegrityError::Io(_)) => VerifiedEntry {
-                    path: entry.path.clone(),
-                    blob_ref: blob_ref.to_string(),
-                    status: IntegrityStatus::Missing,
-                    reason: Some(err.to_string()),
-                },
-            };
+            let verified =
+                match artifact::blob::read_verified(&ctx_path, blob_ref, &entry.hash_at_index) {
+                    Ok(_) => VerifiedEntry {
+                        path: entry.path.clone(),
+                        blob_ref: blob_ref.to_string(),
+                        status: IntegrityStatus::Ok,
+                        reason: None,
+                    },
+                    Err(artifact::blob::IntegrityError::Missing(_)) => VerifiedEntry {
+                        path: entry.path.clone(),
+                        blob_ref: blob_ref.to_string(),
+                        status: IntegrityStatus::Missing,
+                        reason: None,
+                    },
+                    Err(err @ artifact::blob::IntegrityError::BlobDigest { .. })
+                    | Err(err @ artifact::blob::IntegrityError::ContentDigest { .. }) => {
+                        VerifiedEntry {
+                            path: entry.path.clone(),
+                            blob_ref: blob_ref.to_string(),
+                            status: IntegrityStatus::Tampered,
+                            reason: Some(err.to_string()),
+                        }
+                    }
+                    Err(err @ artifact::blob::IntegrityError::Io(_)) => VerifiedEntry {
+                        path: entry.path.clone(),
+                        blob_ref: blob_ref.to_string(),
+                        status: IntegrityStatus::Missing,
+                        reason: Some(err.to_string()),
+                    },
+                };
             entries.push(verified);
         }
     }
@@ -1127,8 +1266,8 @@ pub fn verify_context(name: &str) -> Result<VerifyReport> {
     let mut orphans: Vec<OrphanBlob> = Vec::new();
     let blobs_dir = blobs_path(&ctx_path);
     if blobs_dir.exists() {
-        for dir_entry in fs::read_dir(&blobs_dir)
-            .with_context(|| format!("read {}", blobs_dir.display()))?
+        for dir_entry in
+            fs::read_dir(&blobs_dir).with_context(|| format!("read {}", blobs_dir.display()))?
         {
             let dir_entry = dir_entry?;
             if !dir_entry.file_type()?.is_file() {
@@ -1144,9 +1283,12 @@ pub fn verify_context(name: &str) -> Result<VerifyReport> {
     }
     orphans.sort_by(|a, b| a.blob_hash.cmp(&b.blob_hash));
 
-    let has_failures = entries
-        .iter()
-        .any(|e| matches!(e.status, IntegrityStatus::Tampered | IntegrityStatus::Missing));
+    let has_failures = entries.iter().any(|e| {
+        matches!(
+            e.status,
+            IntegrityStatus::Tampered | IntegrityStatus::Missing
+        )
+    });
 
     Ok(VerifyReport {
         entries,
@@ -1214,7 +1356,11 @@ pub fn refresh_aura_registry(ctx_path: &Path, manifest: &mut Manifest) -> Result
         .collect();
 
     let mut refreshed: Vec<artifact::manifest::AuraFile> = Vec::new();
-    for entry in WalkDir::new(&dir).min_depth(1).into_iter().filter_map(|e| e.ok()) {
+    for entry in WalkDir::new(&dir)
+        .min_depth(1)
+        .into_iter()
+        .filter_map(|e| e.ok())
+    {
         if !entry.file_type().is_file() {
             continue;
         }
@@ -1223,9 +1369,10 @@ pub fn refresh_aura_registry(ctx_path: &Path, manifest: &mut Manifest) -> Result
             continue;
         }
         let rel = abs.strip_prefix(ctx_path).unwrap_or(abs);
-        let rel_str = rel.to_string_lossy().replace(std::path::MAIN_SEPARATOR, "/");
-        let bytes = fs::read(abs)
-            .with_context(|| format!("read aura file {}", abs.display()))?;
+        let rel_str = rel
+            .to_string_lossy()
+            .replace(std::path::MAIN_SEPARATOR, "/");
+        let bytes = fs::read(abs).with_context(|| format!("read aura file {}", abs.display()))?;
         let hash = hash_bytes(&bytes);
         let updated_at = match existing.get(&rel_str) {
             Some(prev) if prev.hash == hash => prev.updated_at,
@@ -1253,8 +1400,7 @@ pub fn read_aura_summary(ctx_path: &Path) -> Result<AuraSummary> {
             return Ok(None);
         }
         Ok(Some(
-            fs::read_to_string(&path)
-                .with_context(|| format!("read {}", path.display()))?,
+            fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?,
         ))
     };
     let index = read_opt("index.md")?;
@@ -1262,7 +1408,11 @@ pub fn read_aura_summary(ctx_path: &Path) -> Result<AuraSummary> {
 
     let mut topics: Vec<String> = Vec::new();
     if dir.exists() {
-        for entry in WalkDir::new(&dir).min_depth(1).into_iter().filter_map(|e| e.ok()) {
+        for entry in WalkDir::new(&dir)
+            .min_depth(1)
+            .into_iter()
+            .filter_map(|e| e.ok())
+        {
             if !entry.file_type().is_file() {
                 continue;
             }
@@ -1275,12 +1425,19 @@ pub fn read_aura_summary(ctx_path: &Path) -> Result<AuraSummary> {
                 continue;
             }
             let rel = abs.strip_prefix(ctx_path).unwrap_or(abs);
-            topics.push(rel.to_string_lossy().replace(std::path::MAIN_SEPARATOR, "/"));
+            topics.push(
+                rel.to_string_lossy()
+                    .replace(std::path::MAIN_SEPARATOR, "/"),
+            );
         }
     }
     topics.sort();
 
-    Ok(AuraSummary { index, aura, topics })
+    Ok(AuraSummary {
+        index,
+        aura,
+        topics,
+    })
 }
 
 /// Reads a single aura file. `rel_path` must start with `aura/` and must resolve inside
@@ -1291,8 +1448,7 @@ pub fn read_aura_file(ctx_path: &Path, rel_path: &str) -> Result<AuraContent> {
     if !abs.exists() {
         bail!("aura file {} does not exist", canonical);
     }
-    let bytes = fs::read(&abs)
-        .with_context(|| format!("read {}", abs.display()))?;
+    let bytes = fs::read(&abs).with_context(|| format!("read {}", abs.display()))?;
     let hash = hash_bytes(&bytes);
     let content = String::from_utf8(bytes)
         .with_context(|| format!("aura file {} is not valid utf-8", canonical))?;
@@ -1324,8 +1480,7 @@ pub fn write_aura_file(
         }
         AuraWriteMode::Append => {
             let mut buffer = if abs.exists() {
-                fs::read(&abs)
-                    .with_context(|| format!("read {}", abs.display()))?
+                fs::read(&abs).with_context(|| format!("read {}", abs.display()))?
             } else {
                 Vec::new()
             };
@@ -1468,6 +1623,144 @@ mod tests {
     }
 
     #[test]
+    fn streaming_path_produces_ordered_virtual_chunks() {
+        let src_dir = TempDir::new().expect("src dir");
+        let file_path = src_dir.path().join("big.log");
+        let target_bytes = (crate::extraction::decoder::PLAIN_TEXT_STREAM_THRESHOLD as usize)
+            + (2 * crate::extraction::decoder::PLAIN_TEXT_UNIT_BYTES);
+        let line = "streaming line payload with deterministic content\n";
+        let mut content = String::with_capacity(target_bytes + line.len());
+        while content.len() < target_bytes {
+            content.push_str(line);
+        }
+        fs::write(&file_path, content.as_bytes()).expect("write large source");
+        let metadata = fs::metadata(&file_path).expect("metadata");
+        assert!(should_stream_plain_text(
+            &file_path,
+            Path::new("big.log"),
+            metadata.len()
+        ));
+
+        let file = File::open(&file_path).expect("open");
+        let mut stream = PlainTextUnitStream::new(BufReader::new(file));
+        let mut chunk_paths: Vec<PathBuf> = Vec::new();
+        while let Some(unit) = stream.next_unit().expect("stream") {
+            chunk_paths.push(unit.virtual_path);
+        }
+
+        assert!(
+            chunk_paths.len() >= 2,
+            "expected multiple streamed virtual units, got {}",
+            chunk_paths.len()
+        );
+        for (idx, path) in chunk_paths.iter().enumerate() {
+            assert_eq!(path, &PathBuf::from(format!("chunk-{:0>4}.txt", idx + 1)));
+        }
+    }
+
+    #[test]
+    fn stat_fast_path_accepts_matching_manifest_markers() {
+        let tempdir = TempDir::new().expect("tempdir");
+        let ctx_path = tempdir.path();
+        fs::create_dir_all(ctx_path).expect("mkdir ctx");
+
+        let root = String::from("/tmp/source-root");
+        let source_rel = String::from("big.log");
+        let size = 9 * 1024 * 1024u64;
+        let mtime_unix = 1_715_000_000i64;
+
+        let mut manifest = Manifest::empty("stat-fast-path");
+        let source = manifest.upsert_source(&root);
+        let mut entry = ManifestEntry {
+            path: String::from("big.log/chunk-0001.txt"),
+            hash: String::from("sha256:abc"),
+            hash_at_index: String::from("sha256:abc"),
+            indexed_at: Utc::now(),
+            r#type: String::from("semantic"),
+            blob_ref: None,
+            source_path: Some(source_rel.clone()),
+            extra: serde_json::Map::new(),
+        };
+        entry
+            .extra
+            .insert(String::from("source_size"), Value::from(size));
+        entry
+            .extra
+            .insert(String::from("source_mtime_unix"), Value::from(mtime_unix));
+        source.files.push(entry);
+        manifest.save(ctx_path).expect("save manifest");
+
+        let matches = already_fully_indexed_by_stat(
+            ctx_path,
+            &root,
+            &source_rel,
+            SourceStat { size, mtime_unix },
+            false,
+        )
+        .expect("fast-path check");
+        assert!(matches, "expected stat fast-path to match");
+    }
+
+    #[test]
+    fn stat_fast_path_rejects_mismatched_markers() {
+        let tempdir = TempDir::new().expect("tempdir");
+        let ctx_path = tempdir.path();
+        fs::create_dir_all(ctx_path).expect("mkdir ctx");
+
+        let root = String::from("/tmp/source-root");
+        let source_rel = String::from("big.log");
+        let size = 9 * 1024 * 1024u64;
+        let mtime_unix = 1_715_000_000i64;
+
+        let mut manifest = Manifest::empty("stat-fast-path-mismatch");
+        let source = manifest.upsert_source(&root);
+        let mut entry = ManifestEntry {
+            path: String::from("big.log/chunk-0001.txt"),
+            hash: String::from("sha256:abc"),
+            hash_at_index: String::from("sha256:abc"),
+            indexed_at: Utc::now(),
+            r#type: String::from("semantic"),
+            blob_ref: None,
+            source_path: Some(source_rel.clone()),
+            extra: serde_json::Map::new(),
+        };
+        entry
+            .extra
+            .insert(String::from("source_size"), Value::from(size));
+        entry
+            .extra
+            .insert(String::from("source_mtime_unix"), Value::from(mtime_unix));
+        source.files.push(entry);
+        manifest.save(ctx_path).expect("save manifest");
+
+        let wrong_size = already_fully_indexed_by_stat(
+            ctx_path,
+            &root,
+            &source_rel,
+            SourceStat {
+                size: size + 1,
+                mtime_unix,
+            },
+            false,
+        )
+        .expect("fast-path check");
+        assert!(!wrong_size, "size mismatch must bypass stat fast-path");
+
+        let wrong_mtime = already_fully_indexed_by_stat(
+            ctx_path,
+            &root,
+            &source_rel,
+            SourceStat {
+                size,
+                mtime_unix: mtime_unix + 1,
+            },
+            false,
+        )
+        .expect("fast-path check");
+        assert!(!wrong_mtime, "mtime mismatch must bypass stat fast-path");
+    }
+
+    #[test]
     fn should_skip_junk_and_vcs() {
         assert!(should_skip_path(Path::new("project/.git/HEAD")));
         assert!(should_skip_path(Path::new("project/target/debug/app")));
@@ -1559,8 +1852,7 @@ mod tests {
 
         assert!(!results.is_empty());
         assert!(results.iter().any(|result| {
-            result.content.contains("deploy")
-                || result.summary.to_lowercase().contains("staging")
+            result.content.contains("deploy") || result.summary.to_lowercase().contains("staging")
         }));
 
         std::env::remove_var("CTX_DISABLE_FASTEMBED");
@@ -1710,7 +2002,9 @@ mod tests {
         let summary = read_aura_summary(&ctx_path).expect("read summary");
         assert!(summary.index.is_some());
         assert!(summary.aura.is_some());
-        assert!(summary.topics.contains(&String::from("aura/topics/deploy.md")));
+        assert!(summary
+            .topics
+            .contains(&String::from("aura/topics/deploy.md")));
 
         let content = read_aura_file(&ctx_path, "aura/deploy.md").expect("read file");
         assert_eq!(content.path, "aura/topics/deploy.md");
@@ -1775,9 +2069,14 @@ mod tests {
         let file_path = src_dir.path().join("note.md");
         fs::write(&file_path, "original content").expect("write src");
 
-        add_to_context("drift-status", &file_path, Some(ContentLayer::Semantic), false)
-            .await
-            .expect("add to context");
+        add_to_context(
+            "drift-status",
+            &file_path,
+            Some(ContentLayer::Semantic),
+            false,
+        )
+        .await
+        .expect("add to context");
 
         let manifest_before = Manifest::load(&ctx_path).expect("load manifest");
         let entry_before = manifest_before
@@ -1820,9 +2119,14 @@ mod tests {
         let file_path = src_dir.path().join("note.md");
         fs::write(&file_path, "AuthService uses RS256 tokens.").expect("write src");
 
-        add_to_context("drift-query", &file_path, Some(ContentLayer::Semantic), false)
-            .await
-            .expect("add to context");
+        add_to_context(
+            "drift-query",
+            &file_path,
+            Some(ContentLayer::Semantic),
+            false,
+        )
+        .await
+        .expect("add to context");
 
         let before = drift_state(&ctx_path).expect("drift before");
         assert!(!before.drift_detected);
@@ -1848,16 +2152,23 @@ mod tests {
         let file_path = src_dir.path().join("note.md");
         fs::write(&file_path, "initial").expect("write src");
 
-        add_to_context("drift-update", &file_path, Some(ContentLayer::Semantic), false)
-            .await
-            .expect("add to context");
+        add_to_context(
+            "drift-update",
+            &file_path,
+            Some(ContentLayer::Semantic),
+            false,
+        )
+        .await
+        .expect("add to context");
 
         fs::write(&file_path, "updated body").expect("mutate src");
         let status = context_status("drift-update").expect("status");
         assert_eq!(status.dirty_count, 1);
         assert!(drift_state(&ctx_path).expect("drift set").drift_detected);
 
-        update_context("drift-update").await.expect("update context");
+        update_context("drift-update")
+            .await
+            .expect("update context");
 
         let post = drift_state(&ctx_path).expect("drift after update");
         assert!(!post.drift_detected);
@@ -1916,8 +2227,7 @@ mod tests {
             .clone();
 
         let index_path = aura_path(&ctx_path).join("index.md");
-        fs::write(&index_path, "# Aura Index\n\nEdited externally.\n")
-            .expect("external edit");
+        fs::write(&index_path, "# Aura Index\n\nEdited externally.\n").expect("external edit");
 
         update_context("aura-drift").await.expect("update context");
 
@@ -1972,9 +2282,13 @@ mod tests {
         let blob_ref = entry.blob_ref.as_deref().expect("blob ref populated");
         assert!(blob_ref.starts_with("sha256:"));
 
-        let blob_path = artifact::blobs_path(&ctx_path)
-            .join(blob_ref.trim_start_matches("sha256:"));
-        assert!(blob_path.exists(), "blob file {} missing", blob_path.display());
+        let blob_path =
+            artifact::blobs_path(&ctx_path).join(blob_ref.trim_start_matches("sha256:"));
+        assert!(
+            blob_path.exists(),
+            "blob file {} missing",
+            blob_path.display()
+        );
     }
 
     #[tokio::test]
@@ -1991,9 +2305,14 @@ mod tests {
         let file_path = src_dir.path().join("note.md");
         fs::write(&file_path, "hash only body").expect("write src");
 
-        add_to_context("blob-default", &file_path, Some(ContentLayer::Semantic), false)
-            .await
-            .expect("add without content");
+        add_to_context(
+            "blob-default",
+            &file_path,
+            Some(ContentLayer::Semantic),
+            false,
+        )
+        .await
+        .expect("add without content");
 
         let manifest = Manifest::load(&ctx_path).expect("load manifest");
         assert!(!manifest.config.store_raw_content);
@@ -2116,9 +2435,14 @@ mod tests {
         let file_path = src_dir.path().join("note.md");
         fs::write(&file_path, "original body").expect("write src");
 
-        add_to_context("verify-tamper", &file_path, Some(ContentLayer::Semantic), true)
-            .await
-            .expect("add with content");
+        add_to_context(
+            "verify-tamper",
+            &file_path,
+            Some(ContentLayer::Semantic),
+            true,
+        )
+        .await
+        .expect("add with content");
 
         let manifest = Manifest::load(&ctx_path).expect("load manifest");
         let blob_ref = manifest
@@ -2127,8 +2451,8 @@ mod tests {
             .and_then(|s| s.files.first())
             .and_then(|e| e.blob_ref.clone())
             .expect("blob_ref");
-        let blob_path = artifact::blobs_path(&ctx_path)
-            .join(blob_ref.trim_start_matches("sha256:"));
+        let blob_path =
+            artifact::blobs_path(&ctx_path).join(blob_ref.trim_start_matches("sha256:"));
         fs::write(&blob_path, b"not a valid zstd blob").expect("tamper blob");
 
         let report = verify_context("verify-tamper").expect("verify context");
@@ -2151,9 +2475,14 @@ mod tests {
         let file_path = src_dir.path().join("note.md");
         fs::write(&file_path, "soon to vanish").expect("write src");
 
-        add_to_context("verify-missing", &file_path, Some(ContentLayer::Semantic), true)
-            .await
-            .expect("add with content");
+        add_to_context(
+            "verify-missing",
+            &file_path,
+            Some(ContentLayer::Semantic),
+            true,
+        )
+        .await
+        .expect("add with content");
 
         let manifest = Manifest::load(&ctx_path).expect("load manifest");
         let blob_ref = manifest
@@ -2162,8 +2491,8 @@ mod tests {
             .and_then(|s| s.files.first())
             .and_then(|e| e.blob_ref.clone())
             .expect("blob_ref");
-        let blob_path = artifact::blobs_path(&ctx_path)
-            .join(blob_ref.trim_start_matches("sha256:"));
+        let blob_path =
+            artifact::blobs_path(&ctx_path).join(blob_ref.trim_start_matches("sha256:"));
         fs::remove_file(&blob_path).expect("remove blob");
 
         let report = verify_context("verify-missing").expect("verify context");
@@ -2186,9 +2515,14 @@ mod tests {
         let file_path = src_dir.path().join("note.md");
         fs::write(&file_path, "referenced body").expect("write src");
 
-        add_to_context("verify-orphan", &file_path, Some(ContentLayer::Semantic), true)
-            .await
-            .expect("add with content");
+        add_to_context(
+            "verify-orphan",
+            &file_path,
+            Some(ContentLayer::Semantic),
+            true,
+        )
+        .await
+        .expect("add with content");
 
         let orphan_hex = "0".repeat(64);
         let orphan_path = artifact::blobs_path(&ctx_path).join(&orphan_hex);

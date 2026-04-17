@@ -363,6 +363,10 @@ An implementation SHOULD provide a way to add source material to an artifact.
 
 An implementation SHOULD provide a way to re-index drifted content and refresh artifact state.
 
+Implementation note (non-normative): operators benefit from a low-noise default where bulk
+`add`/`update` runs emit a compact end-of-run summary and expose per-file skip reasons only in a
+verbose mode.
+
 ### 10.3 Status
 
 An implementation SHOULD provide a way to inspect drift and artifact health without mutating state.

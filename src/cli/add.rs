@@ -17,6 +17,8 @@ pub struct AddArgs {
     /// `manifest.config.store_raw_content` on for this artifact.
     #[arg(long = "with-content")]
     pub with_content: bool,
+    #[arg(short = 'v', long = "verbose")]
+    pub verbose: bool,
 }
 
 pub async fn run(args: AddArgs) -> Result<()> {
@@ -26,8 +28,14 @@ pub async fn run(args: AddArgs) -> Result<()> {
         .context
         .clone()
         .unwrap_or(crate::artifact::infer_context_name()?);
-    let outcome =
-        crate::add_to_context(&context, &args.path, args.layer, args.with_content).await?;
+    let outcome = crate::add_to_context_with_verbosity(
+        &context,
+        &args.path,
+        args.layer,
+        args.with_content,
+        args.verbose,
+    )
+    .await?;
     println!(
         "indexed {} chunks {} entities",
         outcome.chunks_written, outcome.entities_written
