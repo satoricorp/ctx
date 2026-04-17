@@ -1,5 +1,6 @@
 pub mod api;
 pub mod artifact;
+pub mod aura_update;
 pub mod auth;
 pub mod cli;
 pub mod extraction;
@@ -202,6 +203,10 @@ pub async fn update_context(context: &str) -> Result<ContextStatus> {
     let mut manifest = Manifest::load(&ctx_path)?;
     refresh_aura_registry(&ctx_path, &mut manifest)?;
     manifest.save(&ctx_path)?;
+
+    if let Err(err) = aura_update::update_aura(&ctx_path).await {
+        eprintln!("aura update skipped: {err:#}");
+    }
 
     context_status(context)
 }

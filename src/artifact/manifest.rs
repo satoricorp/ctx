@@ -16,8 +16,10 @@ const LEGACY_MANIFEST_VERSION: &str = "1";
 pub struct ManifestConfig {
     // Spec §4.2 fields.
     pub store_raw_content: bool,
-    pub promotion_threshold_days: u32,
-    pub promotion_min_occurrences: u32,
+    #[serde(default = "default_aura_update_threshold_days")]
+    pub aura_update_threshold_days: u32,
+    #[serde(default = "default_aura_update_min_topics")]
+    pub aura_update_min_topics: u32,
     pub embedding_model: String,
     // Retained runtime knobs (not in spec).
     pub splade_enabled: bool,
@@ -27,12 +29,20 @@ pub struct ManifestConfig {
     pub extra: Map<String, Value>,
 }
 
+fn default_aura_update_threshold_days() -> u32 {
+    7
+}
+
+fn default_aura_update_min_topics() -> u32 {
+    3
+}
+
 impl Default for ManifestConfig {
     fn default() -> Self {
         Self {
             store_raw_content: false,
-            promotion_threshold_days: 7,
-            promotion_min_occurrences: 3,
+            aura_update_threshold_days: default_aura_update_threshold_days(),
+            aura_update_min_topics: default_aura_update_min_topics(),
             embedding_model: "fastembed:all-MiniLM-L6-v2".into(),
             splade_enabled: true,
             extraction_model: "openai:gpt-5.4-nano".into(),
@@ -152,6 +162,17 @@ impl Manifest {
                 path.display(),
                 MANIFEST_VERSION,
             );
+        }
+
+        if let Some(v) = manifest.config.extra.remove("promotion_threshold_days") {
+            if let Some(n) = v.as_u64() {
+                manifest.config.aura_update_threshold_days = n as u32;
+            }
+        }
+        if let Some(v) = manifest.config.extra.remove("promotion_min_occurrences") {
+            if let Some(n) = v.as_u64() {
+                manifest.config.aura_update_min_topics = n as u32;
+            }
         }
 
         Ok(manifest)
@@ -300,8 +321,8 @@ mod tests {
               "updated_at": "2026-04-16T00:00:00Z",
               "config": {{
                 "store_raw_content": false,
-                "promotion_threshold_days": 7,
-                "promotion_min_occurrences": 3,
+                "aura_update_threshold_days": 7,
+                "aura_update_min_topics": 3,
                 "embedding_model": "fastembed:all-MiniLM-L6-v2",
                 "splade_enabled": true,
                 "extraction_model": "openai:gpt-5.4-nano"
@@ -349,8 +370,8 @@ mod tests {
           "updated_at": "2026-04-16T00:00:00Z",
           "config": {
             "store_raw_content": false,
-            "promotion_threshold_days": 7,
-            "promotion_min_occurrences": 3,
+            "aura_update_threshold_days": 7,
+            "aura_update_min_topics": 3,
             "embedding_model": "fastembed:all-MiniLM-L6-v2",
             "splade_enabled": true,
             "extraction_model": "openai:gpt-5.4-nano",
@@ -387,8 +408,8 @@ mod tests {
           "updated_at": "2026-04-16T00:00:00Z",
           "config": {
             "store_raw_content": false,
-            "promotion_threshold_days": 7,
-            "promotion_min_occurrences": 3,
+            "aura_update_threshold_days": 7,
+            "aura_update_min_topics": 3,
             "embedding_model": "fastembed:all-MiniLM-L6-v2",
             "splade_enabled": true,
             "extraction_model": "openai:gpt-5.4-nano"
@@ -448,5 +469,46 @@ mod tests {
         assert!(raw.contains("\"note\""), "got {raw}");
         assert!(raw.contains("\"policy\""), "got {raw}");
         assert!(raw.contains("\"owner\""), "got {raw}");
+    }
+
+    #[test]
+    fn load_migrates_legacy_promotion_config_fields() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let json = r#"{
+          "version": "0.2",
+          "name": "demo",
+          "created_at": "2026-04-16T00:00:00Z",
+          "updated_at": "2026-04-16T00:00:00Z",
+          "config": {
+            "store_raw_content": false,
+            "promotion_threshold_days": 14,
+            "promotion_min_occurrences": 5,
+            "embedding_model": "fastembed:all-MiniLM-L6-v2",
+            "splade_enabled": true,
+            "extraction_model": "openai:gpt-5.4-nano"
+          },
+          "sources": [],
+          "aura": { "files": [] }
+        }"#;
+        write_manifest(dir.path(), json);
+
+        let mut manifest = Manifest::load(dir.path()).expect("load");
+        assert_eq!(manifest.config.aura_update_threshold_days, 14);
+        assert_eq!(manifest.config.aura_update_min_topics, 5);
+        assert!(
+            !manifest.config.extra.contains_key("promotion_threshold_days"),
+            "extra still has promotion_threshold_days"
+        );
+        assert!(
+            !manifest.config.extra.contains_key("promotion_min_occurrences"),
+            "extra still has promotion_min_occurrences"
+        );
+
+        manifest.save(dir.path()).expect("save");
+        let raw = fs::read_to_string(manifest_path(dir.path())).expect("read");
+        assert!(raw.contains("\"aura_update_threshold_days\""), "got {raw}");
+        assert!(raw.contains("\"aura_update_min_topics\""), "got {raw}");
+        assert!(!raw.contains("\"promotion_threshold_days\""), "got {raw}");
+        assert!(!raw.contains("\"promotion_min_occurrences\""), "got {raw}");
     }
 }
