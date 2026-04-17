@@ -3,6 +3,7 @@ pub mod artifact;
 pub mod aura_update;
 pub mod auth;
 pub mod cli;
+pub mod doctor;
 pub mod extraction;
 pub mod index;
 pub mod install;
@@ -206,6 +207,28 @@ pub async fn query_context(
 ) -> Result<Vec<QueryResult>> {
     let ctx_path = open_existing_context(context)?;
     retrieval::query::query(query, kind, &ctx_path, k).await
+}
+
+/// Drops the on-disk index and re-ingests every manifest entry from its original source.
+/// Blobs are preserved; only the index and the `hash_at_index` bookkeeping are reset.
+pub async fn rebuild_index(context: &str) -> Result<ContextStatus> {
+    let ctx_path = open_existing_context(context)?;
+    let idx = index_path(&ctx_path);
+
+    store::evict_env(&idx);
+    if idx.exists() {
+        fs::remove_dir_all(&idx).with_context(|| format!("remove {}", idx.display()))?;
+    }
+
+    let mut manifest = Manifest::load(&ctx_path)?;
+    for source in manifest.sources.iter_mut() {
+        for entry in source.files.iter_mut() {
+            entry.hash_at_index.clear();
+        }
+    }
+    manifest.save(&ctx_path)?;
+
+    update_context(context).await
 }
 
 pub async fn update_context(context: &str) -> Result<ContextStatus> {
@@ -1359,7 +1382,7 @@ fn normalize_aura_path(rel_path: &str) -> String {
 /// Canonicalizes an aura-relative path so root-level topic writes land under
 /// `aura/topics/`. Reserved files (`aura/aura.md`, `aura/index.md`) and paths
 /// that already include a subdirectory are returned unchanged.
-fn canonical_aura_path(rel_path: &str) -> String {
+pub(crate) fn canonical_aura_path(rel_path: &str) -> String {
     let normalized = normalize_aura_path(rel_path);
     let segments: Vec<&str> = normalized.split('/').collect();
     if segments.len() != 2 || segments[0] != "aura" {

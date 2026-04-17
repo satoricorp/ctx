@@ -80,6 +80,14 @@ pub fn get_or_open_env(index_path: &Path) -> Result<Arc<HelixEnv>> {
     Ok(env)
 }
 
+/// Drop any cached env for `index_path`. Callers that need to delete/rebuild the
+/// on-disk index MUST call this first so storage file handles are released.
+pub fn evict_env(index_path: &Path) {
+    let registry = INDEX_ENVS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut map = registry.lock().expect("env registry poisoned");
+    map.remove(index_path);
+}
+
 fn open_helix_env(index_path: &Path) -> Result<HelixGraphEngine> {
     let mut config = HelixConfig::default();
     config.mcp = Some(false);

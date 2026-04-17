@@ -1,11 +1,12 @@
 pub mod add;
+pub mod doctor;
 pub mod init;
 pub mod list;
-pub mod scope;
 pub mod mcp;
 pub mod publish;
 pub mod pull;
 pub mod query;
+pub mod scope;
 pub mod status;
 pub mod update;
 
@@ -28,6 +29,7 @@ enum Commands {
     Update(update::UpdateArgs),
     List(list::ListArgs),
     Status(status::StatusArgs),
+    Doctor(doctor::DoctorArgs),
     Mcp(mcp::McpArgs),
     Publish(publish::PublishArgs),
     Pull(pull::PullArgs),
@@ -41,6 +43,7 @@ pub async fn run() -> Result<()> {
         Commands::Update(args) => update::run(args).await,
         Commands::List(args) => list::run(args).await,
         Commands::Status(args) => status::run(args).await,
+        Commands::Doctor(args) => doctor::run(args).await,
         Commands::Mcp(args) => mcp::run(args).await,
         Commands::Publish(args) => publish::run(args).await,
         Commands::Pull(args) => pull::run(args).await,

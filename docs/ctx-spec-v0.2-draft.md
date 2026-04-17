@@ -367,6 +367,8 @@ An implementation SHOULD provide a way to re-index drifted content and refresh a
 
 An implementation SHOULD provide a way to inspect drift and artifact health without mutating state.
 
+An implementation MAY additionally provide a deeper health check (e.g. `ctx doctor`) that verifies blob integrity, aura registry consistency, and index presence. Such a command SHOULD run its checks concurrently, stream results fast-first so the operator receives immediate feedback, and offer a non-destructive repair mode that MAY include pruning orphan blobs, relocating stray aura topic files into `aura/topics/`, resyncing the aura registry, and rebuilding the index in place. Source files MUST NOT be deleted by a repair operation.
+
 ### 10.4 Query
 
 An implementation SHOULD provide a way to retrieve semantic and procedural context.
