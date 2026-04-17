@@ -2,7 +2,7 @@ use anyhow::Result;
 use clap::Args;
 use std::path::PathBuf;
 
-use crate::cli::scope::{apply_context_image_flag, ContextSelectArgs};
+use crate::cli::scope::{resolve_context_name, ContextSelectArgs};
 use crate::extraction::classifier::ContentLayer;
 
 #[derive(Debug, Args)]
@@ -22,12 +22,7 @@ pub struct AddArgs {
 }
 
 pub async fn run(args: AddArgs) -> Result<()> {
-    apply_context_image_flag(&args.select.image);
-    let context = args
-        .select
-        .context
-        .clone()
-        .unwrap_or(crate::artifact::infer_context_name()?);
+    let context = resolve_context_name(&args.select)?;
     let outcome = crate::add_to_context_with_verbosity(
         &context,
         &args.path,

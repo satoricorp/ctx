@@ -1,25 +1,16 @@
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use clap::Args;
 
-use crate::cli::scope::{apply_context_image_flag, ContextSelectArgs};
-use crate::IntegrityStatus;
+use crate::cli::scope::{resolve_context_name, ContextSelectArgs};
 
 #[derive(Debug, Args)]
 pub struct StatusArgs {
     #[command(flatten)]
     pub select: ContextSelectArgs,
-    /// Verify blob integrity and surface orphan blobs (spec §13.1, §13.5).
-    #[arg(long = "verify")]
-    pub verify: bool,
 }
 
 pub async fn run(args: StatusArgs) -> Result<()> {
-    apply_context_image_flag(&args.select.image);
-    let context = args
-        .select
-        .context
-        .clone()
-        .unwrap_or(crate::artifact::infer_context_name()?);
+    let context = resolve_context_name(&args.select)?;
     let status = crate::context_status(&context)?;
     println!("context {}", status.name);
     println!(
@@ -51,36 +42,5 @@ pub async fn run(args: StatusArgs) -> Result<()> {
         println!("hint: run `ctx update` to re-index");
     }
 
-    if args.verify {
-        let report = crate::verify_context(&context)?;
-        if report.entries.is_empty() {
-            println!("verify: no blob-backed entries");
-        } else {
-            println!("verify:");
-            for entry in &report.entries {
-                let label = match entry.status {
-                    IntegrityStatus::Ok => "ok",
-                    IntegrityStatus::Tampered => "tampered",
-                    IntegrityStatus::Missing => "missing",
-                };
-                match &entry.reason {
-                    Some(reason) => println!(
-                        "  {:8} {}  {}  {}",
-                        label, entry.path, entry.blob_ref, reason
-                    ),
-                    None => println!("  {:8} {}  {}", label, entry.path, entry.blob_ref),
-                }
-            }
-        }
-        if !report.orphans.is_empty() {
-            println!("orphan blobs:");
-            for orphan in &report.orphans {
-                println!("  {}", orphan.blob_hash);
-            }
-        }
-        if report.has_failures {
-            return Err(anyhow!("integrity check failed"));
-        }
-    }
     Ok(())
 }

@@ -1,7 +1,7 @@
 use anyhow::Result;
 use clap::Args;
 
-use crate::cli::scope::{apply_context_image_flag, ContextSelectArgs};
+use crate::cli::scope::{resolve_context_name, ContextSelectArgs};
 
 #[derive(Debug, Args)]
 pub struct UpdateArgs {
@@ -12,12 +12,7 @@ pub struct UpdateArgs {
 }
 
 pub async fn run(args: UpdateArgs) -> Result<()> {
-    apply_context_image_flag(&args.select.image);
-    let context = args
-        .select
-        .context
-        .clone()
-        .unwrap_or(crate::artifact::infer_context_name()?);
+    let context = resolve_context_name(&args.select)?;
     let status = crate::update_context_with_verbosity(&context, args.verbose).await?;
     println!("updated {}", status.name);
     Ok(())

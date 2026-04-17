@@ -8,6 +8,7 @@ pub mod pull;
 pub mod query;
 pub mod scope;
 pub mod status;
+pub mod use_context;
 pub mod update;
 
 use anyhow::Result;
@@ -27,6 +28,7 @@ enum Commands {
     Add(add::AddArgs),
     Query(query::QueryArgs),
     Update(update::UpdateArgs),
+    Use(use_context::UseArgs),
     List(list::ListArgs),
     Status(status::StatusArgs),
     Doctor(doctor::DoctorArgs),
@@ -41,6 +43,7 @@ pub async fn run() -> Result<()> {
         Commands::Add(args) => add::run(args).await,
         Commands::Query(args) => query::run(args).await,
         Commands::Update(args) => update::run(args).await,
+        Commands::Use(args) => use_context::run(args).await,
         Commands::List(args) => list::run(args).await,
         Commands::Status(args) => status::run(args).await,
         Commands::Doctor(args) => doctor::run(args).await,

@@ -19,32 +19,14 @@ pub fn context_root_base() -> PathBuf {
         .join("contexts")
 }
 
-/// Effective contexts directory. Per spec §11 this is always the base; **CTX_IMAGE** scoping
-/// happens at the artifact-name level in [`context_path`], not via an `images/` subdirectory.
+/// Effective contexts directory.
 pub fn context_root() -> PathBuf {
     context_root_base()
 }
 
-fn sanitize_image_segment(tag: &str) -> String {
-    tag.chars()
-        .map(|c| {
-            if c == '/' || c == '\\' || c.is_control() {
-                '-'
-            } else {
-                c
-            }
-        })
-        .collect()
-}
-
-/// Resolve the artifact directory for a named context. When **CTX_IMAGE** is set (and non-empty),
-/// the image tag replaces `name`, producing `…/contexts/<tag>.ctx`.
+/// Resolve the artifact directory for a named context.
 pub fn context_path(name: &str) -> PathBuf {
-    let effective = match std::env::var("CTX_IMAGE") {
-        Ok(tag) if !tag.trim().is_empty() => sanitize_image_segment(tag.trim()),
-        _ => name.to_string(),
-    };
-    context_root().join(format!("{}.ctx", effective))
+    context_root().join(format!("{}.ctx", name))
 }
 
 pub fn index_path(ctx_path: &Path) -> PathBuf {

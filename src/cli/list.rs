@@ -2,17 +2,10 @@ use anyhow::Result;
 use chrono::{DateTime, Utc};
 use clap::Args;
 
-use crate::cli::scope::apply_context_image_flag;
-
 #[derive(Debug, Args)]
-pub struct ListArgs {
-    /// List contexts for this image scope (same as env **CTX_IMAGE**).
-    #[arg(long = "image", value_name = "TAG_OR_DIGEST")]
-    pub image: Option<String>,
-}
+pub struct ListArgs {}
 
-pub async fn run(args: ListArgs) -> Result<()> {
-    apply_context_image_flag(&args.image);
+pub async fn run(_args: ListArgs) -> Result<()> {
     for context in crate::list_contexts()? {
         println!(
             "{} {} chunks {} entities {}",

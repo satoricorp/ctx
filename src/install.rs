@@ -40,6 +40,8 @@ pub struct Config {
     pub user: Option<UserConfig>,
     #[serde(default = "default_alpha")]
     pub alpha: f32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_context: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,6 +92,7 @@ impl Default for Config {
             models_dir: default_models_dir(),
             user: None,
             alpha: default_alpha(),
+            default_context: None,
         }
     }
 }
@@ -152,6 +155,16 @@ pub fn save_config(config: &Config) -> Result<()> {
 pub fn save_user_config(user: &UserConfig) -> Result<()> {
     let mut config = load_config().unwrap_or_default();
     config.user = Some(user.clone());
+    save_config(&config)
+}
+
+pub fn set_default_context(context: &str) -> Result<()> {
+    let trimmed = context.trim();
+    if trimmed.is_empty() {
+        bail!("default context cannot be empty");
+    }
+    let mut config = load_config()?;
+    config.default_context = Some(trimmed.to_string());
     save_config(&config)
 }
 
