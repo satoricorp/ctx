@@ -12,7 +12,7 @@ use calamine::{Data, Range, Reader};
 use quick_xml::events::Event;
 use quick_xml::reader::Reader as XmlReader;
 use std::collections::HashMap;
-use std::io::{Cursor, Read};
+use std::io::{BufRead, Cursor, Read};
 use std::path::{Path, PathBuf};
 
 /// One decoded text unit extracted from a source file.
@@ -31,7 +31,8 @@ pub trait Decoder: Sync {
     fn decode(&self, path: &Path, bytes: &[u8]) -> Result<Vec<DecodedUnit>>;
 }
 
-/// Fallback decoder: interprets the full file as UTF-8 text. Errors on invalid UTF-8.
+/// Fallback decoder: passes UTF-8 text through, strips a BOM when present, and falls back to
+/// encoding detection for legacy/non-UTF-8 text. Errors only when nothing lands cleanly.
 pub struct PlainTextDecoder;
 
 impl Decoder for PlainTextDecoder {
@@ -40,13 +41,59 @@ impl Decoder for PlainTextDecoder {
     }
 
     fn decode(&self, _path: &Path, bytes: &[u8]) -> Result<Vec<DecodedUnit>> {
-        let text = String::from_utf8(bytes.to_vec())
-            .map_err(|_| anyhow!("failed to decode as utf-8 text"))?;
+        let text = decode_text_bytes(bytes)?;
         Ok(vec![DecodedUnit {
             virtual_path: PathBuf::new(),
             text,
         }])
     }
+}
+
+/// Maximum bytes fed to the encoding sniffer before guessing. Large enough to stabilise the guess
+/// on realistic prose/log files while keeping detection O(1) on multi-GB inputs.
+const ENCODING_SNIFF_BYTES: usize = 1024 * 1024;
+
+/// Decode an in-memory byte buffer into UTF-8 text. Handles UTF-8/UTF-16 BOMs up front, then
+/// tries strict UTF-8, then falls back to [`chardetng`] + [`encoding_rs`] for legacy encodings
+/// (Latin-1, Windows-1252, GBK, Shift-JIS, …). Returns an error only when no candidate decodes
+/// cleanly, so callers can still warn-and-skip on true binary soup.
+pub fn decode_text_bytes(bytes: &[u8]) -> Result<String> {
+    if let Some(rest) = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]) {
+        return std::str::from_utf8(rest).map(str::to_string).map_err(|_| {
+            anyhow!("failed to decode as utf-8 text (BOM followed by invalid utf-8)")
+        });
+    }
+    if let Some(rest) = bytes.strip_prefix(&[0xFF, 0xFE]) {
+        return decode_with(encoding_rs::UTF_16LE, rest);
+    }
+    if let Some(rest) = bytes.strip_prefix(&[0xFE, 0xFF]) {
+        return decode_with(encoding_rs::UTF_16BE, rest);
+    }
+
+    if let Ok(s) = std::str::from_utf8(bytes) {
+        return Ok(s.to_string());
+    }
+
+    let sample_end = bytes.len().min(ENCODING_SNIFF_BYTES);
+    let sample = &bytes[..sample_end];
+    let mut detector = chardetng::EncodingDetector::new(chardetng::Iso2022JpDetection::Deny);
+    detector.feed(sample, sample_end == bytes.len());
+    let encoding = detector.guess(None, chardetng::Utf8Detection::Deny);
+    if encoding == encoding_rs::UTF_8 {
+        return Err(anyhow!("failed to decode as utf-8 text"));
+    }
+    decode_with(encoding, bytes)
+}
+
+fn decode_with(encoding: &'static encoding_rs::Encoding, bytes: &[u8]) -> Result<String> {
+    let (text, _, had_errors) = encoding.decode(bytes);
+    if had_errors {
+        return Err(anyhow!(
+            "failed to decode as {} text",
+            encoding.name().to_ascii_lowercase()
+        ));
+    }
+    Ok(text.into_owned())
 }
 
 /// Per-page PDF text extraction via [`pdf_extract`]. Produces one [`DecodedUnit`] per page
@@ -231,12 +278,7 @@ impl Decoder for HtmlDecoder {
         let ext_matches = path
             .extension()
             .and_then(|ext| ext.to_str())
-            .map(|ext| {
-                matches!(
-                    ext.to_ascii_lowercase().as_str(),
-                    "html" | "htm" | "xhtml"
-                )
-            })
+            .map(|ext| matches!(ext.to_ascii_lowercase().as_str(), "html" | "htm" | "xhtml"))
             .unwrap_or(false);
         if ext_matches {
             return true;
@@ -261,7 +303,11 @@ fn looks_like_html(bytes: &[u8]) -> bool {
         .position(|b| !b.is_ascii_whitespace() && *b != 0xEF && *b != 0xBB && *b != 0xBF)
         .map(|idx| &bytes[idx..])
         .unwrap_or(bytes);
-    let prefix_lower: Vec<u8> = trimmed.iter().take(64).map(|b| b.to_ascii_lowercase()).collect();
+    let prefix_lower: Vec<u8> = trimmed
+        .iter()
+        .take(64)
+        .map(|b| b.to_ascii_lowercase())
+        .collect();
     prefix_lower.starts_with(b"<!doctype html")
         || prefix_lower.starts_with(b"<html")
         || prefix_lower.starts_with(b"<?xml")
@@ -282,9 +328,8 @@ impl Decoder for JupyterDecoder {
     }
 
     fn decode(&self, path: &Path, bytes: &[u8]) -> Result<Vec<DecodedUnit>> {
-        let notebook: serde_json::Value = serde_json::from_slice(bytes).map_err(|err| {
-            anyhow!("notebook json parse failed for {}: {err}", path.display())
-        })?;
+        let notebook: serde_json::Value = serde_json::from_slice(bytes)
+            .map_err(|err| anyhow!("notebook json parse failed for {}: {err}", path.display()))?;
 
         let default_language = notebook
             .pointer("/metadata/kernelspec/language")
@@ -377,9 +422,8 @@ impl Decoder for DocxDecoder {
     }
 
     fn decode(&self, path: &Path, bytes: &[u8]) -> Result<Vec<DecodedUnit>> {
-        let xml = read_zip_entry(bytes, "word/document.xml").with_context(|| {
-            format!("reading word/document.xml from {}", path.display())
-        })?;
+        let xml = read_zip_entry(bytes, "word/document.xml")
+            .with_context(|| format!("reading word/document.xml from {}", path.display()))?;
         let text = extract_docx_text(&xml)
             .with_context(|| format!("parsing word/document.xml from {}", path.display()))?;
         if text.trim().is_empty() {
@@ -395,11 +439,7 @@ impl Decoder for DocxDecoder {
 fn matches_extension(path: &Path, allowed: &[&str]) -> bool {
     path.extension()
         .and_then(|ext| ext.to_str())
-        .map(|ext| {
-            allowed
-                .iter()
-                .any(|known| ext.eq_ignore_ascii_case(known))
-        })
+        .map(|ext| allowed.iter().any(|known| ext.eq_ignore_ascii_case(known)))
         .unwrap_or(false)
 }
 
@@ -529,12 +569,10 @@ impl Decoder for PptxDecoder {
         let pad_width = page_pad_width(slides.len());
         let mut units: Vec<DecodedUnit> = Vec::new();
         for (idx, name) in &slides {
-            let xml = read_zip_entry_in(&mut archive, name).with_context(|| {
-                format!("reading {} from {}", name, path.display())
-            })?;
-            let text = extract_docx_text(&xml).with_context(|| {
-                format!("parsing {} from {}", name, path.display())
-            })?;
+            let xml = read_zip_entry_in(&mut archive, name)
+                .with_context(|| format!("reading {} from {}", name, path.display()))?;
+            let text = extract_docx_text(&xml)
+                .with_context(|| format!("parsing {} from {}", name, path.display()))?;
             if text.trim().is_empty() {
                 continue;
             }
@@ -669,9 +707,7 @@ fn parse_opf(opf_xml: &str) -> Result<OpfPackage> {
                     let mut href: Option<String> = None;
                     for attr in e.attributes().flatten() {
                         match attr.key.as_ref() {
-                            b"id" => {
-                                id = Some(String::from_utf8_lossy(&attr.value).into_owned())
-                            }
+                            b"id" => id = Some(String::from_utf8_lossy(&attr.value).into_owned()),
                             b"href" => {
                                 href = Some(String::from_utf8_lossy(&attr.value).into_owned())
                             }
@@ -718,10 +754,112 @@ static DECODERS: &[&dyn Decoder] = &[
     &PLAIN_TEXT,
 ];
 
+/// Maximum in-memory payload handed to a binary-format decoder (PDF, XLSX, DOCX, PPTX, EPUB, …).
+/// Plain-text content is exempt and uses the streaming path for large inputs.
+pub const MAX_BINARY_DECODER_BYTES: u64 = 256 * 1024 * 1024;
+
+/// Files larger than this get routed to the streaming plain-text path instead of slurped whole.
+pub const PLAIN_TEXT_STREAM_THRESHOLD: u64 = 8 * 1024 * 1024;
+
+/// Target size for each plain-text streaming unit. Flushed at a newline boundary, so actual
+/// units may overshoot slightly on files with very long lines.
+pub const PLAIN_TEXT_UNIT_BYTES: usize = 8 * 1024 * 1024;
+
+/// Bytes read from the head of a file to decide whether any binary decoder will claim it.
+pub const PEEK_SNIFF_BYTES: usize = 4096;
+
+/// Returns true when one of the registered binary decoders (everything except the plain-text
+/// fallback) will accept the file given its path and the first [`PEEK_SNIFF_BYTES`] of content.
+pub fn any_binary_decoder_claims(path: &Path, peek: &[u8]) -> bool {
+    let binary = &DECODERS[..DECODERS.len() - 1];
+    binary.iter().any(|d| d.can_decode(path, peek))
+}
+
+/// Streaming plain-text chunker. Reads the underlying `BufRead` line-by-line, accumulating until
+/// the buffer exceeds `unit_bytes`, then yields a [`DecodedUnit`] with a `chunk-NNNN.txt` virtual
+/// path. The last partial buffer is emitted at EOF. Line-aligned flushes keep each chunk text
+/// a self-contained UTF-8 (or detected-encoding) string.
+pub struct PlainTextUnitStream<R: BufRead> {
+    reader: R,
+    unit_bytes: usize,
+    buffer: Vec<u8>,
+    chunk_idx: usize,
+    done: bool,
+}
+
+impl<R: BufRead> PlainTextUnitStream<R> {
+    pub fn new(reader: R) -> Self {
+        Self::with_unit_bytes(reader, PLAIN_TEXT_UNIT_BYTES)
+    }
+
+    pub fn with_unit_bytes(reader: R, unit_bytes: usize) -> Self {
+        Self {
+            reader,
+            unit_bytes: unit_bytes.max(1),
+            buffer: Vec::new(),
+            chunk_idx: 0,
+            done: false,
+        }
+    }
+
+    /// Pull the next fully-decoded unit, or `Ok(None)` at EOF.
+    pub fn next_unit(&mut self) -> Result<Option<DecodedUnit>> {
+        if self.done {
+            return Ok(None);
+        }
+        loop {
+            let mut line = Vec::new();
+            let n = self
+                .reader
+                .read_until(b'\n', &mut line)
+                .map_err(|err| anyhow!("streaming read failed: {err}"))?;
+            if n == 0 {
+                self.done = true;
+                if self.buffer.is_empty() {
+                    return Ok(None);
+                }
+                return Ok(Some(self.flush_buffer()?));
+            }
+            self.buffer.extend_from_slice(&line);
+            if self.buffer.len() >= self.unit_bytes {
+                return Ok(Some(self.flush_buffer()?));
+            }
+        }
+    }
+
+    fn flush_buffer(&mut self) -> Result<DecodedUnit> {
+        self.chunk_idx += 1;
+        let text = decode_text_bytes(&self.buffer)?;
+        self.buffer.clear();
+        Ok(DecodedUnit {
+            virtual_path: PathBuf::from(format!("chunk-{:0>4}.txt", self.chunk_idx)),
+            text,
+        })
+    }
+}
+
 /// Dispatch `(path, bytes)` to the first registered decoder that accepts it.
 pub fn decode_file(path: &Path, bytes: &[u8]) -> Result<Vec<DecodedUnit>> {
-    for decoder in DECODERS {
+    decode_file_with_cap(path, bytes, MAX_BINARY_DECODER_BYTES)
+}
+
+/// Same as [`decode_file`] but with a caller-supplied cap. Exposed for tests so we don't have to
+/// allocate hundreds of megabytes to exercise the "too large" branch.
+pub fn decode_file_with_cap(
+    path: &Path,
+    bytes: &[u8],
+    binary_cap: u64,
+) -> Result<Vec<DecodedUnit>> {
+    for (idx, decoder) in DECODERS.iter().enumerate() {
         if decoder.can_decode(path, bytes) {
+            let is_plain_text = idx + 1 == DECODERS.len();
+            if !is_plain_text && (bytes.len() as u64) > binary_cap {
+                return Err(anyhow!(
+                    "file exceeds {} byte cap for binary decoders; skipping {}",
+                    binary_cap,
+                    path.display()
+                ));
+            }
             return decoder.decode(path, bytes);
         }
     }
@@ -741,10 +879,115 @@ mod tests {
     }
 
     #[test]
-    fn plain_text_rejects_invalid_utf8() {
-        let err = decode_file(Path::new("bin.dat"), &[0xFFu8, 0xFE, 0xFD])
-            .expect_err("non-utf8 must fail");
-        assert!(err.to_string().to_lowercase().contains("utf-8"));
+    fn plain_text_strips_utf8_bom() {
+        let units = decode_file(Path::new("note.md"), b"\xEF\xBB\xBFhello").expect("decode bom");
+        assert_eq!(units.len(), 1);
+        assert_eq!(units[0].text, "hello");
+    }
+
+    #[test]
+    fn plain_text_decodes_utf16_le_with_bom() {
+        // "hi" as UTF-16 LE: 0x68 0x00 0x69 0x00, with BOM 0xFF 0xFE.
+        let bytes = [0xFFu8, 0xFE, 0x68, 0x00, 0x69, 0x00];
+        let units = decode_file(Path::new("x.txt"), &bytes).expect("decode utf16le");
+        assert_eq!(units[0].text, "hi");
+    }
+
+    #[test]
+    fn plain_text_decodes_utf16_be_with_bom() {
+        // "hi" as UTF-16 BE: 0x00 0x68 0x00 0x69, with BOM 0xFE 0xFF.
+        let bytes = [0xFEu8, 0xFF, 0x00, 0x68, 0x00, 0x69];
+        let units = decode_file(Path::new("x.txt"), &bytes).expect("decode utf16be");
+        assert_eq!(units[0].text, "hi");
+    }
+
+    #[test]
+    fn plain_text_decodes_legacy_windows_1252() {
+        // "café" in Windows-1252 / Latin-1: é is 0xE9.
+        let bytes = b"caf\xE9";
+        let units = decode_file(Path::new("legacy.txt"), bytes).expect("decode cp1252");
+        assert_eq!(units[0].text, "café");
+    }
+
+    #[test]
+    fn binary_decoder_rejects_oversize_payload() {
+        // PDF magic so PdfDecoder claims the file, then padding past a tiny cap.
+        let mut bytes = b"%PDF-1.4\n".to_vec();
+        bytes.resize(1024, 0);
+        let err = decode_file_with_cap(Path::new("big.pdf"), &bytes, 512)
+            .expect_err("should reject oversize binary");
+        assert!(
+            err.to_string().contains("exceeds"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn plain_text_stream_splits_on_unit_bytes() {
+        use std::io::BufReader;
+        // Build a 10-line input with each line ~40 bytes, so total ≈ 400 bytes.
+        let source: String = (0..10)
+            .map(|i| format!("line {i:02} - padding to make the line about 40 bytes long\n"))
+            .collect();
+        let total_len = source.len();
+        let reader = BufReader::new(source.as_bytes());
+        let mut stream = PlainTextUnitStream::with_unit_bytes(reader, 100);
+        let mut units = Vec::new();
+        while let Some(unit) = stream.next_unit().expect("stream") {
+            units.push(unit);
+        }
+        assert!(
+            units.len() >= 3,
+            "expected multiple chunks, got {}",
+            units.len()
+        );
+        let joined: String = units.iter().map(|u| u.text.as_str()).collect();
+        assert_eq!(joined.len(), total_len);
+        assert_eq!(joined, source);
+        for (idx, unit) in units.iter().enumerate() {
+            let expected = PathBuf::from(format!("chunk-{:0>4}.txt", idx + 1));
+            assert_eq!(unit.virtual_path, expected);
+        }
+    }
+
+    #[test]
+    fn plain_text_stream_handles_empty_input() {
+        use std::io::BufReader;
+        let reader = BufReader::new(&b""[..]);
+        let mut stream = PlainTextUnitStream::new(reader);
+        assert!(stream.next_unit().expect("stream").is_none());
+    }
+
+    #[test]
+    fn any_binary_decoder_claims_respects_extension_and_magic() {
+        assert!(any_binary_decoder_claims(Path::new("report.pdf"), b""));
+        assert!(any_binary_decoder_claims(Path::new("no-ext"), b"%PDF-1.4"));
+        assert!(any_binary_decoder_claims(Path::new("deck.pptx"), b""));
+        assert!(!any_binary_decoder_claims(
+            Path::new("log.txt"),
+            b"plain text"
+        ));
+        assert!(!any_binary_decoder_claims(
+            Path::new("notes.md"),
+            b"# heading"
+        ));
+    }
+
+    #[test]
+    fn plain_text_decoder_exempt_from_binary_cap() {
+        // Plain text larger than the binary cap still decodes (only binary decoders are capped).
+        let bytes = vec![b'a'; 2048];
+        let units = decode_file_with_cap(Path::new("big.txt"), &bytes, 512)
+            .expect("plain text must not be capped");
+        assert_eq!(units[0].text.len(), 2048);
+    }
+
+    #[test]
+    fn plain_text_rejects_truncated_utf16() {
+        // UTF-16 LE BOM followed by a single odd byte: guaranteed to fail decoding.
+        let err = decode_file(Path::new("bad.dat"), &[0xFFu8, 0xFE, 0x41])
+            .expect_err("odd-length utf16 must fail");
+        assert!(err.to_string().to_lowercase().contains("utf-16"));
     }
 
     #[test]
@@ -905,9 +1148,15 @@ mod tests {
 </w:document>"#;
         let text = extract_docx_text(xml).expect("parse");
         assert!(text.contains("Hello world."), "runs not joined: {text:?}");
-        assert!(text.contains("Line A\nLine B"), "br not line break: {text:?}");
+        assert!(
+            text.contains("Line A\nLine B"),
+            "br not line break: {text:?}"
+        );
         assert!(text.contains("Tab\tsep"), "tab missing: {text:?}");
-        assert!(text.contains("With & entity"), "entity not decoded: {text:?}");
+        assert!(
+            text.contains("With & entity"),
+            "entity not decoded: {text:?}"
+        );
         let paragraphs = text.split('\n').filter(|s| !s.trim().is_empty()).count();
         assert!(paragraphs >= 4, "paragraphs not split: {text:?}");
     }
@@ -972,7 +1221,10 @@ mod tests {
 </package>"#;
         let pkg = parse_opf(xml).expect("parse");
         assert_eq!(pkg.manifest.len(), 3);
-        assert_eq!(pkg.manifest.get("ch1").map(String::as_str), Some("Text/chapter1.xhtml"));
+        assert_eq!(
+            pkg.manifest.get("ch1").map(String::as_str),
+            Some("Text/chapter1.xhtml")
+        );
         assert_eq!(pkg.spine, vec!["intro".to_string(), "ch1".to_string()]);
     }
 
