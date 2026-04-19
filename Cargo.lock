@@ -1383,7 +1383,6 @@ dependencies = [
 [[package]]
 name = "helix-db"
 version = "1.3.3"
-source = "git+https://github.com/HelixDB/helix-db#b776c7b46716153abe3321c763e0b54b84683f0f"
 dependencies = [
  "ariadne",
  "async-trait",
@@ -1424,7 +1423,6 @@ dependencies = [
 [[package]]
 name = "helix-macros"
 version = "0.1.7"
-source = "git+https://github.com/HelixDB/helix-db#b776c7b46716153abe3321c763e0b54b84683f0f"
 dependencies = [
  "dirs 5.0.1",
  "proc-macro2",
@@ -1435,7 +1433,6 @@ dependencies = [
 [[package]]
 name = "helix-metrics"
 version = "0.1.1"
-source = "git+https://github.com/HelixDB/helix-db#b776c7b46716153abe3321c763e0b54b84683f0f"
 dependencies = [
  "async-trait",
  "chrono",
