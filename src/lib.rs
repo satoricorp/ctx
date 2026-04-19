@@ -36,7 +36,7 @@ use artifact::{
 };
 use index::procedural::{ingest_procedural_document, record_procedure_structured};
 use index::semantic::ingest_semantic_document;
-use install::{ensure_base_dirs, load_config, save_config};
+use install::{ensure_base_dirs, load_config, save_config, set_default_context_if_unset};
 use store::get_or_open_env;
 use store::schema::{
     AddOutcome, ContextListing, ContextStatus, IngestionSummary, RecordProcedureInput,
@@ -71,6 +71,7 @@ fn prepare_context_layout(name: &str) -> Result<PathBuf> {
     manifest.save(&ctx_path)?;
 
     get_or_open_env(&index_path(&ctx_path))?;
+    set_default_context_if_unset(name)?;
     Ok(ctx_path)
 }
 
@@ -289,6 +290,31 @@ pub async fn record_procedure(context: &str, record: RecordProcedureInput) -> Re
     Ok(record_procedure_structured(&ctx_path, None, record, None)
         .await?
         .id)
+}
+
+/// Context names from `~/.ctx/contexts/*.ctx` directory stems, sorted.
+///
+/// Does not open index databases or read `manifest.json` — use for fast enumeration (e.g. `ctx list`).
+pub fn list_context_names() -> Result<Vec<String>> {
+    let root = context_root();
+    if !root.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut names = Vec::new();
+    for entry in fs::read_dir(root)? {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_dir() || path.extension().and_then(|ext| ext.to_str()) != Some("ctx") {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        names.push(stem.to_string());
+    }
+    names.sort();
+    Ok(names)
 }
 
 pub fn list_contexts() -> Result<Vec<ContextListing>> {

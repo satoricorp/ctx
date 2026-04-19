@@ -2,7 +2,7 @@ use anyhow::Result;
 use clap::Args;
 
 use crate::artifact::context_path;
-use crate::cli::scope::{resolve_context_name, ContextSelectArgs};
+use crate::cli::scope::ContextSelectArgs;
 use crate::index_job::{self, IndexJobKind};
 use crate::index_plan;
 
@@ -13,9 +13,43 @@ pub struct StatusArgs {
 }
 
 pub async fn run(args: StatusArgs) -> Result<()> {
-    let context = resolve_context_name(&args.select)?;
-    let status = crate::context_status(&context)?;
-    println!("context {}", status.name);
+    let default_ctx = crate::install::default_context_selection();
+    let default_ref = default_ctx.as_deref();
+
+    if let Some(name) = args
+        .select
+        .context
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        return print_one_context_status(name, default_ref);
+    }
+
+    let names = crate::list_context_names()?;
+    if names.is_empty() {
+        return Ok(());
+    }
+
+    let mut first = true;
+    for name in names {
+        if !first {
+            println!();
+        }
+        first = false;
+        print_one_context_status(&name, default_ref)?;
+    }
+    Ok(())
+}
+
+fn print_one_context_status(context: &str, default_ctx: Option<&str>) -> Result<()> {
+    let status = crate::context_status(context)?;
+    let star = default_ctx.is_some_and(|d| d == status.name.as_str());
+    println!(
+        "context {}{}",
+        status.name,
+        if star { " *" } else { "" }
+    );
     println!(
         "indexed {} dirty {} pending {}",
         status.indexed_count, status.dirty_count, status.pending_count
@@ -38,7 +72,7 @@ pub async fn run(args: StatusArgs) -> Result<()> {
         }
     );
 
-    let ctx_path = context_path(&context);
+    let ctx_path = context_path(context);
     if let Some(job) = index_job::read_active_job(&ctx_path)? {
         print_index_job_line(&job);
     }

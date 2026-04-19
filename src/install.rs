@@ -158,6 +158,17 @@ pub fn save_user_config(user: &UserConfig) -> Result<()> {
     save_config(&config)
 }
 
+/// Resolved default context name from config, if set and non-empty after trim.
+pub fn default_context_selection() -> Option<String> {
+    let s = load_config().ok()?.default_context?;
+    let t = s.trim();
+    if t.is_empty() {
+        None
+    } else {
+        Some(t.to_string())
+    }
+}
+
 pub fn set_default_context(context: &str) -> Result<()> {
     let trimmed = context.trim();
     if trimmed.is_empty() {
@@ -166,6 +177,26 @@ pub fn set_default_context(context: &str) -> Result<()> {
     let mut config = load_config()?;
     config.default_context = Some(trimmed.to_string());
     save_config(&config)
+}
+
+/// Sets `default_context` only when none is configured (or it is empty).
+pub fn set_default_context_if_unset(context: &str) -> Result<()> {
+    let trimmed = context.trim();
+    if trimmed.is_empty() {
+        bail!("context name cannot be empty");
+    }
+    let mut config = load_config()?;
+    let unset = config
+        .default_context
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .is_none();
+    if unset {
+        config.default_context = Some(trimmed.to_string());
+        save_config(&config)?;
+    }
+    Ok(())
 }
 
 pub fn effective_alpha(config: &Config) -> f32 {
