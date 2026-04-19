@@ -10,9 +10,112 @@ use crate::artifact::manifest_path;
 /// Current manifest schema version (spec §6.3).
 pub const MANIFEST_VERSION: &str = "0.2";
 
+/// Rewrites legacy on-disk keys (`ctx_version`, `created`, `entries`) into the current manifest
+/// shape so older local artifacts keep loading.
+fn migrate_legacy_manifest_map(map: &mut Map<String, Value>) -> Result<()> {
+    if !map.contains_key("version") {
+        if map.remove("ctx_version").is_some() {
+            map.insert("version".to_string(), Value::String(MANIFEST_VERSION.into()));
+        }
+    }
+    if !map.contains_key("created_at") {
+        if let Some(created) = map.remove("created") {
+            map.insert("created_at".to_string(), created.clone());
+            map.entry("updated_at".to_string()).or_insert(created);
+        }
+    }
+    if !map.contains_key("sources") {
+        if let Some(entries) = map.remove("entries") {
+            map.insert("sources".to_string(), legacy_entries_to_sources(entries, map)?);
+        }
+    }
+    Ok(())
+}
+
+fn legacy_entries_to_sources(entries: Value, map: &Map<String, Value>) -> Result<Value> {
+    let Value::Array(list) = entries else {
+        anyhow::bail!("legacy manifest `entries` must be a JSON array");
+    };
+    if list.is_empty() {
+        return Ok(Value::Array(vec![]));
+    }
+    let added_at = map
+        .get("created_at")
+        .or_else(|| map.get("updated_at"))
+        .cloned()
+        .ok_or_else(|| {
+            anyhow::anyhow!("legacy manifest needs `created`/`created_at` to migrate non-empty `entries`")
+        })?;
+    let mut files = Vec::with_capacity(list.len());
+    for item in list {
+        let entry = migrate_legacy_entry_to_manifest_entry(item).with_context(|| {
+            "legacy manifest `entries` item is not a valid v0.2 file entry (try `ctx doctor` or re-init)"
+        })?;
+        files.push(serde_json::to_value(entry)?);
+    }
+    let mut source = Map::new();
+    source.insert("root".to_string(), Value::String(".".to_string()));
+    source.insert("added_at".to_string(), added_at);
+    source.insert("files".to_string(), Value::Array(files));
+    Ok(Value::Array(vec![Value::Object(source)]))
+}
+
+/// Older builds stored flat `entries` with `source_path` / `source_hash` / `layer` instead of the
+/// v0.2 [`ManifestEntry`] field names.
+fn migrate_legacy_entry_to_manifest_entry(v: Value) -> Result<ManifestEntry> {
+    if let Ok(entry) = serde_json::from_value::<ManifestEntry>(v.clone()) {
+        return Ok(entry);
+    }
+    let Value::Object(mut map) = v else {
+        anyhow::bail!("entry must be a JSON object");
+    };
+    if map.contains_key("source_path") && map.contains_key("source_hash") {
+        let source_path = take_json_string(&mut map, "source_path")?;
+        let source_hash = take_json_string(&mut map, "source_hash")?;
+        let blob_ref = map
+            .remove("blob_hash")
+            .filter(|v| !v.is_null())
+            .map(|v| {
+                v.as_str()
+                    .map(String::from)
+                    .ok_or_else(|| anyhow::anyhow!("blob_hash must be a string"))
+            })
+            .transpose()?;
+        let layer = take_json_string(&mut map, "layer")?;
+        let indexed_at: DateTime<Utc> = map
+            .remove("indexed_at")
+            .map(serde_json::from_value)
+            .transpose()?
+            .ok_or_else(|| anyhow::anyhow!("missing indexed_at"))?;
+        map.remove("hash");
+        map.remove("hash_at_index");
+        map.remove("path");
+        map.remove("type");
+        Ok(ManifestEntry {
+            path: source_path,
+            hash: source_hash.clone(),
+            hash_at_index: source_hash,
+            indexed_at,
+            r#type: layer,
+            blob_ref,
+            source_path: None,
+            extra: map,
+        })
+    } else {
+        serde_json::from_value(Value::Object(map)).with_context(|| "unknown legacy entry shape")
+    }
+}
+
+fn take_json_string(map: &mut Map<String, Value>, key: &str) -> Result<String> {
+    map.remove(key)
+        .and_then(|v| v.as_str().map(String::from))
+        .ok_or_else(|| anyhow::anyhow!("missing {key}"))
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ManifestConfig {
     // Spec §4.2 fields.
+    #[serde(default)]
     pub store_raw_content: bool,
     #[serde(default = "default_aura_update_threshold_days")]
     pub aura_update_threshold_days: u32,
@@ -146,10 +249,14 @@ impl Manifest {
             ));
         }
 
-        let manifest: Manifest = serde_json::from_slice(
-            &fs::read(&path).with_context(|| format!("read {}", path.display()))?,
-        )
-        .with_context(|| format!("parse {}", path.display()))?;
+        let bytes = fs::read(&path).with_context(|| format!("read {}", path.display()))?;
+        let mut value: Value =
+            serde_json::from_slice(&bytes).with_context(|| format!("parse {}", path.display()))?;
+        if let Value::Object(ref mut map) = value {
+            migrate_legacy_manifest_map(map).with_context(|| format!("migrate {}", path.display()))?;
+        }
+        let manifest: Manifest = serde_json::from_value(value)
+            .with_context(|| format!("parse {}", path.display()))?;
 
         if manifest.version != MANIFEST_VERSION {
             anyhow::bail!(
@@ -455,4 +562,69 @@ mod tests {
         assert!(message.contains("\"1\""), "got {message}");
         assert!(message.contains("\"0.2\""), "got {message}");
     }
+
+    #[test]
+    fn load_migrates_legacy_ctx_version_and_entries() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let json = r#"{
+          "ctx_version": "1.0",
+          "name": "homes",
+          "created": "2026-04-15T20:34:25.331072Z",
+          "config": {
+            "splade_enabled": true,
+            "extraction_model": "openai:gpt-5.4-nano",
+            "embedding_model": "fastembed:all-MiniLM-L6-v2"
+          },
+          "entries": []
+        }"#;
+        write_manifest(dir.path(), json);
+        let manifest = Manifest::load(dir.path()).expect("load legacy");
+        assert_eq!(manifest.version, "0.2");
+        assert_eq!(manifest.name, "homes");
+        assert!(manifest.sources.is_empty());
+        assert!(!manifest.config.store_raw_content);
+    }
+
+    #[test]
+    fn load_migrates_legacy_flat_entries_with_source_path() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let json = r#"{
+          "ctx_version": "1.0",
+          "name": "demo",
+          "created": "2026-04-13T19:20:19.010418Z",
+          "config": {
+            "splade_enabled": true,
+            "extraction_model": "openai:gpt-5.4-nano",
+            "embedding_model": "fastembed:all-MiniLM-L6-v2"
+          },
+          "entries": [
+            {
+              "id": "64eff7dd-4b9e-4687-92a1-f94e7f942d9f",
+              "source_path": "longmemeval/e47becba/sharegpt_yywfIrx_0.md",
+              "source_hash": "sha256:3c37e6cf38f1c18f1b3abb8d0f18e1354540d55f24bdeaf0f9cc4e1f619a6387",
+              "blob_hash": "sha256:4189d6d4b970816c418113ff9636cf9356fb4497bbf27b2fdf1daf35d06c388e",
+              "layer": "semantic",
+              "summary": "summary",
+              "status": "indexed",
+              "indexed_at": "2026-04-13T19:21:43.805924Z",
+              "chunk_count": 16,
+              "entity_count": 101
+            }
+          ]
+        }"#;
+        write_manifest(dir.path(), json);
+        let manifest = Manifest::load(dir.path()).expect("load legacy flat entries");
+        assert_eq!(manifest.sources.len(), 1);
+        assert_eq!(manifest.sources[0].root, ".");
+        assert_eq!(manifest.sources[0].files.len(), 1);
+        let f = &manifest.sources[0].files[0];
+        assert_eq!(f.path, "longmemeval/e47becba/sharegpt_yywfIrx_0.md");
+        assert_eq!(f.r#type, "semantic");
+        assert_eq!(
+            f.blob_ref.as_deref(),
+            Some("sha256:4189d6d4b970816c418113ff9636cf9356fb4497bbf27b2fdf1daf35d06c388e")
+        );
+        assert!(f.extra.contains_key("id"));
+    }
+
 }
