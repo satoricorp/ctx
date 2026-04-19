@@ -11,8 +11,10 @@ use anyhow::{anyhow, Context, Result};
 use calamine::{Data, Range, Reader};
 use quick_xml::events::Event;
 use quick_xml::reader::Reader as XmlReader;
+use std::any::Any;
 use std::collections::HashMap;
 use std::io::{BufRead, Cursor, Read};
+use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 
 /// One decoded text unit extracted from a source file.
@@ -113,8 +115,24 @@ impl Decoder for PdfDecoder {
     }
 
     fn decode(&self, path: &Path, bytes: &[u8]) -> Result<Vec<DecodedUnit>> {
-        let pages = pdf_extract::extract_text_from_mem_by_pages(bytes)
-            .map_err(|err| anyhow!("pdf text extraction failed for {}: {err}", path.display()))?;
+        // `pdf-extract` may panic on malformed PDFs (e.g. invalid content streams) instead of
+        // returning `Err`. Treat panics like decode failures so indexing can skip and continue.
+        let path_display = path.display().to_string();
+        let extract = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            pdf_extract::extract_text_from_mem_by_pages(bytes)
+        }));
+        let pages = match extract {
+            Ok(Ok(pages)) => pages,
+            Ok(Err(err)) => {
+                return Err(anyhow!("pdf text extraction failed for {path_display}: {err}"));
+            }
+            Err(payload) => {
+                return Err(anyhow!(
+                    "pdf text extraction failed for {path_display}: {}",
+                    panic_payload_string(payload)
+                ));
+            }
+        };
 
         let pad_width = page_pad_width(pages.len());
         Ok(pages
@@ -140,6 +158,16 @@ fn page_pad_width(total: usize) -> usize {
         100..=999 => 3,
         _ => 4,
     }
+}
+
+fn panic_payload_string(payload: Box<dyn Any + Send>) -> String {
+    if let Some(s) = payload.downcast_ref::<&'static str>() {
+        return (*s).to_string();
+    }
+    if let Some(s) = payload.downcast_ref::<String>() {
+        return s.clone();
+    }
+    String::from("panic in dependency (no message)")
 }
 
 /// Per-worksheet spreadsheet decoding via [`calamine`]. Handles xlsx, xlsm, xlsb, xls, and ods.

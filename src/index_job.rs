@@ -73,6 +73,32 @@ pub fn pid_alive(pid: u32) -> bool {
     }
 }
 
+/// Path to the on-disk job JSON (`job-{id}.json` or `job-{id}-sync.json` from sync runs).
+pub fn job_state_path(ctx_path: &Path, job: &IndexJobState) -> Option<PathBuf> {
+    let run = run_path(ctx_path);
+    let background = run.join(format!("job-{}.json", job.job_id));
+    if background.exists() {
+        return Some(background);
+    }
+    let sync = run.join(format!("job-{}-sync.json", job.job_id));
+    if sync.exists() {
+        return Some(sync);
+    }
+    None
+}
+
+/// True when [`execute_index_job_file`] can continue this job (worker died or failed mid-run).
+pub fn job_is_resumable(job: &IndexJobState) -> bool {
+    if job.items.is_empty() || job.done >= job.items.len() {
+        return false;
+    }
+    match job.phase.as_str() {
+        "running" => !pid_alive(job.pid),
+        "failed" => true,
+        _ => false,
+    }
+}
+
 /// Load `active.json` if present.
 pub fn read_active_job(ctx_path: &Path) -> Result<Option<IndexJobState>> {
     let p = active_job_path(ctx_path);
@@ -246,6 +272,27 @@ pub fn start_background_index_job(
     Ok(())
 }
 
+/// If `active.json` describes an interrupted job, run it to completion. Returns `true` when a job
+/// was found and executed to completion.
+pub async fn try_finish_resumable_job(ctx_path: &Path) -> Result<bool> {
+    let Some(job) = read_active_job(ctx_path)? else {
+        return Ok(false);
+    };
+    if !job_is_resumable(&job) {
+        return Ok(false);
+    }
+    let Some(job_path) = job_state_path(ctx_path, &job) else {
+        return Ok(false);
+    };
+    eprintln!(
+        "resuming interrupted index job {} ({}/{} files) …",
+        job.job_id, job.done, job.total
+    );
+    execute_index_job_file(&job_path).await?;
+    eprintln!("resumed index job finished");
+    Ok(true)
+}
+
 /// CLI entry: execute job file (ingest loop + optional finalize).
 pub async fn execute_index_job_file(job_path: &Path) -> Result<()> {
     let text = fs::read_to_string(job_path).context("read job file")?;
@@ -267,7 +314,31 @@ pub async fn execute_index_job_file(job_path: &Path) -> Result<()> {
 
     let mut summary = IngestionSummary::default();
 
-    for (idx, item) in state.items.iter().enumerate() {
+    if state.done > state.items.len() {
+        bail!("corrupt index job: done > items");
+    }
+
+    let resume_note = if state.done > 0 {
+        writeln!(
+            &mut log_append,
+            "resuming from file index {} of {}",
+            state.done,
+            state.items.len()
+        )?;
+        true
+    } else {
+        false
+    };
+    if resume_note {
+        eprintln!(
+            "resuming from file {} of {}",
+            state.done.saturating_add(1),
+            state.items.len()
+        );
+    }
+
+    for idx in state.done..state.items.len() {
+        let item = &state.items[idx];
         state.done = idx;
         state.current_path = Some(item.abs.display().to_string());
         atomic_write_json(job_path, &state)?;
@@ -319,6 +390,8 @@ pub async fn execute_index_job_file(job_path: &Path) -> Result<()> {
 
     state.done = state.items.len();
     state.current_path = None;
+    atomic_write_json(job_path, &state)?;
+    atomic_write_json(&active_job_path(&ctx_path), &state)?;
 
     if state.with_finalize_update {
         if let Err(e) = finalize_update_context(&state.context_name, &ctx_path).await {

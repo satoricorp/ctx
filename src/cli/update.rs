@@ -26,6 +26,17 @@ pub struct UpdateArgs {
 pub async fn run(args: UpdateArgs) -> Result<()> {
     let context = resolve_context_name(&args.select)?;
     let ctx_path = open_existing_context(&context)?;
+
+    if !args.dry_run {
+        index_job::try_finish_resumable_job(&ctx_path).await?;
+    } else if index_job::read_active_job(&ctx_path)?
+        .as_ref()
+        .map(index_job::job_is_resumable)
+        .unwrap_or(false)
+    {
+        eprintln!("note: interrupted index job pending; omit --dry-run to resume it first");
+    }
+
     let manifest = crate::artifact::Manifest::load(&ctx_path)?;
     let with_content = manifest.config.store_raw_content;
 

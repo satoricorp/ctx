@@ -41,6 +41,17 @@ pub struct AddArgs {
 pub async fn run(args: AddArgs) -> Result<()> {
     let context = resolve_context_name(&args.select)?;
     let ctx_path = ensure_context_for_add(&context)?;
+
+    if !args.dry_run {
+        index_job::try_finish_resumable_job(&ctx_path).await?;
+    } else if index_job::read_active_job(&ctx_path)?
+        .as_ref()
+        .map(index_job::job_is_resumable)
+        .unwrap_or(false)
+    {
+        eprintln!("note: interrupted index job pending; omit --dry-run to resume it first");
+    }
+
     let abs = args
         .path
         .canonicalize()
