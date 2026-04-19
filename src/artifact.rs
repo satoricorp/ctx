@@ -45,6 +45,11 @@ pub fn aura_path(ctx_path: &Path) -> PathBuf {
     ctx_path.join("aura")
 }
 
+/// Durable indexing job state, logs, and lockfile (`active.json`, `job-*.log`, `lock`).
+pub fn run_path(ctx_path: &Path) -> PathBuf {
+    ctx_path.join("run")
+}
+
 pub fn infer_context_name() -> Result<String> {
     std::env::current_dir()?
         .file_name()

@@ -88,9 +88,7 @@ impl CtxMcpServer {
                 topics: summary.topics,
             },
             drift_detected: drift.drift_detected,
-            drift_hint: drift
-                .drift_detected
-                .then(|| crate::DRIFT_HINT.to_string()),
+            drift_hint: drift.drift_detected.then(|| crate::DRIFT_HINT.to_string()),
         }))
     }
 
@@ -118,7 +116,10 @@ impl CtxMcpServer {
         Ok(Json(RecordToolOutput { id }))
     }
 
-    #[tool(name = "ctx_aura_read", description = "read an aura file from a context")]
+    #[tool(
+        name = "ctx_aura_read",
+        description = "read an aura file from a context"
+    )]
     pub async fn ctx_aura_read(
         &self,
         Parameters(input): Parameters<AuraReadToolInput>,

@@ -21,6 +21,7 @@ quick-xml = "0.39"
 rtf-parser = "0.4"
 zip = { version = "8", default-features = false, features = ["deflate"] }
 clap = { version = "4.5", features = ["derive"] }
+dialoguer = "0.11"
 dirs = "5"
 encoding_rs = "0.8.35"
 futures = "0.3"
@@ -48,3 +49,6 @@ uuid = { version = "1", features = ["v4", "serde"] }
 walkdir = "2"
 zstd = "0.13"
 chardetng = "1.0.0"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

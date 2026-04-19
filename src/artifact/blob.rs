@@ -107,8 +107,8 @@ mod tests {
         let bytes = b"hello blob world";
         let written = write_blob(dir.path(), bytes).expect("write");
 
-        let got = read_verified(dir.path(), &written.blob_hash, &written.source_hash)
-            .expect("verify");
+        let got =
+            read_verified(dir.path(), &written.blob_hash, &written.source_hash).expect("verify");
         assert_eq!(got, bytes);
     }
 
@@ -122,7 +122,10 @@ mod tests {
 
         let err = read_verified(dir.path(), &written.blob_hash, &written.source_hash)
             .expect_err("must fail");
-        assert!(matches!(err, IntegrityError::BlobDigest { .. }), "got {err:?}");
+        assert!(
+            matches!(err, IntegrityError::BlobDigest { .. }),
+            "got {err:?}"
+        );
     }
 
     #[test]

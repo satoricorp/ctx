@@ -7,9 +7,9 @@ use std::path::Path;
 use uuid::Uuid;
 
 use crate::artifact::index_path;
-use crate::extraction::chunker::{chunk_content, Chunk};
+use crate::extraction::chunker::{chunk_content, merge_chunks_by_token_budget, Chunk};
 use crate::extraction::semantic::extract_semantic;
-use crate::models::embeddings::embed_dense;
+use crate::models::embeddings::embed_dense_batch;
 use crate::store::get_or_open_env;
 use crate::store::schema::{AddOutcome, ChunkRecord, EntityRecord, RelationRecord};
 
@@ -23,6 +23,15 @@ fn semantic_ingest_concurrency() -> usize {
         .and_then(|s| s.parse().ok())
         .unwrap_or(4)
         .clamp(1, 256)
+}
+
+/// Merge adjacent chunks when **`CTX_SEMANTIC_CHUNK_MERGE_MAX_TOKENS`** is set (token budget via [`crate::extraction::chunker::token_count`]). `0` disables merging.
+fn semantic_chunk_merge_max_tokens() -> usize {
+    const ENV: &str = "CTX_SEMANTIC_CHUNK_MERGE_MAX_TOKENS";
+    std::env::var(ENV)
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0)
 }
 
 #[derive(Debug, Clone)]
@@ -59,24 +68,45 @@ pub async fn ingest_semantic_document(
         ));
     }
 
+    chunks = merge_chunks_by_token_budget(chunks, semantic_chunk_merge_max_tokens());
+
     let concurrency = semantic_ingest_concurrency();
     let source_owned = source_path.to_string();
 
-    let mut indexed: Vec<(usize, Chunk, crate::extraction::semantic::SemanticExtraction, Vec<f32>)> =
-        stream::iter(chunks.into_iter().enumerate())
-            .map(|(idx, chunk)| {
-                let source_owned = source_owned.clone();
-                async move {
-                    let extraction = extract_semantic(&chunk.index_text, &source_owned).await?;
-                    let embedding = embed_dense(&chunk.index_text).await?;
-                    Ok::<_, anyhow::Error>((idx, chunk, extraction, embedding))
-                }
-            })
-            .buffer_unordered(concurrency)
-            .try_collect()
-            .await?;
+    let mut extracted: Vec<(
+        usize,
+        Chunk,
+        crate::extraction::semantic::SemanticExtraction,
+    )> = stream::iter(chunks.into_iter().enumerate())
+        .map(|(idx, chunk)| {
+            let source_owned = source_owned.clone();
+            async move {
+                let extraction = extract_semantic(&chunk.index_text, &source_owned).await?;
+                Ok::<_, anyhow::Error>((idx, chunk, extraction))
+            }
+        })
+        .buffer_unordered(concurrency)
+        .try_collect()
+        .await?;
 
-    indexed.sort_by_key(|(idx, _, _, _)| *idx);
+    extracted.sort_by_key(|(idx, _, _)| *idx);
+
+    let index_texts: Vec<String> = extracted
+        .iter()
+        .map(|(_, chunk, _)| chunk.index_text.clone())
+        .collect();
+    let embeddings = embed_dense_batch(&index_texts).await?;
+
+    let indexed: Vec<(
+        usize,
+        Chunk,
+        crate::extraction::semantic::SemanticExtraction,
+        Vec<f32>,
+    )> = extracted
+        .into_iter()
+        .zip(embeddings)
+        .map(|((idx, chunk, extraction), embedding)| (idx, chunk, extraction, embedding))
+        .collect();
 
     let mut chunk_records = Vec::new();
     let mut entity_records = Vec::new();

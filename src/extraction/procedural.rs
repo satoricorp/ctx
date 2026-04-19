@@ -56,9 +56,8 @@ async fn extract_procedural_with_llm(content: &str) -> Result<ProceduralExtracti
 
 fn parse_procedural_llm_output(raw: &str) -> Result<ProceduralExtraction> {
     let json = extract_json_object(raw)?;
-    let parsed: ProceduralLlmOutput = deserialize_first_json_value(json).map_err(|error| {
-        anyhow!("failed to parse procedural extraction JSON: {error}")
-    })?;
+    let parsed: ProceduralLlmOutput = deserialize_first_json_value(json)
+        .map_err(|error| anyhow!("failed to parse procedural extraction JSON: {error}"))?;
 
     let task_description = parsed.task_description.trim().to_string();
     if task_description.is_empty() {

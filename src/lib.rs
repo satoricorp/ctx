@@ -6,6 +6,8 @@ pub mod cli;
 pub mod doctor;
 pub mod extraction;
 pub mod index;
+pub mod index_job;
+pub mod index_plan;
 pub mod install;
 pub mod mcp;
 pub mod models;
@@ -116,78 +118,18 @@ pub async fn add_to_context_with_verbosity(
         .with_context(|| format!("resolve {}", path.display()))?;
 
     if abs.is_dir() {
-        let root = abs.clone();
-        let mut total = AddOutcome::default();
-        let mut summary = IngestionSummary::default();
-        for entry in WalkDir::new(&root)
-            .into_iter()
-            .filter_map(|entry| entry.ok())
-        {
-            let entry_path = entry.path();
-            if !entry.file_type().is_file() {
-                continue;
-            }
-            match classify_path(entry_path) {
-                SkipCheck::Keep => {}
-                SkipCheck::DeniedExtension => {
-                    summary.files_seen += 1;
-                    summary.files_skipped_denylist += 1;
-                    continue;
-                }
-                SkipCheck::InfrastructureDir | SkipCheck::JunkFile => continue,
-            }
-            summary.files_seen += 1;
-            let rel = entry_path
-                .strip_prefix(&root)
-                .unwrap_or(entry_path)
-                .to_path_buf();
-            match ingest_source_from_path(&ctx_path, &root, &rel, entry_path, layer, with_content)
-                .await
-            {
-                IngestOutcomeKind::Decoded {
-                    outcome,
-                    bytes_read,
-                } => {
-                    summary.files_decoded += 1;
-                    summary.bytes_read += bytes_read;
-                    summary.units_written += 1;
-                    summary.chunks_written += outcome.chunks_written;
-                    summary.entities_written += outcome.entities_written;
-                    total.chunks_written += outcome.chunks_written;
-                    total.entities_written += outcome.entities_written;
-                }
-                IngestOutcomeKind::TooLarge { size } => {
-                    summary.files_skipped_too_large += 1;
-                    if verbose {
-                        eprintln!(
-                            "skipped {}: file size {} exceeds binary decoder cap",
-                            entry_path.display(),
-                            size
-                        );
-                    }
-                }
-                IngestOutcomeKind::ReadError(err) => {
-                    summary.files_skipped_read_error += 1;
-                    if verbose {
-                        eprintln!("skipped {}: {err:#}", entry_path.display());
-                    }
-                }
-                IngestOutcomeKind::DecodeError(err) => {
-                    summary.files_skipped_decode_error += 1;
-                    if verbose {
-                        eprintln!("skipped {}: {err:#}", entry_path.display());
-                    }
-                }
-                IngestOutcomeKind::EncodingError(err) => {
-                    summary.files_skipped_encoding_error += 1;
-                    if verbose {
-                        eprintln!("skipped {}: {err:#}", entry_path.display());
-                    }
-                }
-            }
-        }
+        let plan = index_plan::plan_add_directory(&ctx_path, &abs, layer, with_content)?;
+        let mut summary = run_ingest_work_items(&ctx_path, &plan.items, verbose).await?;
+        summary.files_seen = plan.stats.files_seen;
+        summary.files_skipped_denylist = plan.stats.skipped_denylist;
+        summary.files_skipped_too_large += plan.stats.skipped_too_large;
+        summary.files_skipped_read_error += plan.stats.skipped_stat_error;
+        // Already-indexed files were excluded from `items`; count as neither decoded nor decode-error.
         eprintln!("{}", summary.format_oneline());
-        return Ok(total);
+        return Ok(AddOutcome {
+            chunks_written: summary.chunks_written,
+            entities_written: summary.entities_written,
+        });
     }
 
     let root = abs
@@ -259,31 +201,32 @@ pub async fn update_context_with_verbosity(context: &str, verbose: bool) -> Resu
     let ctx_path = open_existing_context(context)?;
     let manifest = Manifest::load(&ctx_path)?;
     let with_content = manifest.config.store_raw_content;
+    let plan = index_plan::plan_manifest_update(&ctx_path, with_content)?;
+    let mut summary = run_ingest_work_items(&ctx_path, &plan.items, verbose).await?;
+    summary.files_seen = plan.stats.files_seen;
+    eprintln!("{}", summary.format_oneline());
 
-    let mut targets: Vec<(PathBuf, PathBuf, Option<ContentLayer>)> = Vec::new();
-    let mut seen: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
-    for source in &manifest.sources {
-        let root = PathBuf::from(&source.root);
-        for entry in &source.files {
-            let source_path = entry.effective_source_path().to_string();
-            if !seen.insert((source.root.clone(), source_path.clone())) {
-                continue;
-            }
-            let rel = PathBuf::from(&source_path);
-            let layer = parse_layer(&entry.r#type).ok();
-            targets.push((root.clone(), rel, layer));
-        }
-    }
+    finalize_update_context(context, &ctx_path).await
+}
 
+/// Ingest only planned work items (shared by sync add/update and background jobs).
+pub async fn run_ingest_work_items(
+    ctx_path: &Path,
+    items: &[index_plan::WorkItem],
+    verbose: bool,
+) -> Result<IngestionSummary> {
     let mut summary = IngestionSummary::default();
-    for (root, source_rel, layer) in targets {
-        let abs = root.join(&source_rel);
-        if !abs.exists() {
-            continue;
-        }
-        summary.files_seen += 1;
-        match ingest_source_from_path(&ctx_path, &root, &source_rel, &abs, layer, with_content)
-            .await
+    for item in items {
+        let abs = &item.abs;
+        match ingest_source_from_path(
+            ctx_path,
+            &item.root,
+            &item.rel,
+            abs,
+            item.layer,
+            item.with_content,
+        )
+        .await
         {
             IngestOutcomeKind::Decoded {
                 outcome,
@@ -325,13 +268,16 @@ pub async fn update_context_with_verbosity(context: &str, verbose: bool) -> Resu
             }
         }
     }
-    eprintln!("{}", summary.format_oneline());
+    Ok(summary)
+}
 
-    let mut manifest = Manifest::load(&ctx_path)?;
-    refresh_aura_registry(&ctx_path, &mut manifest)?;
-    manifest.save(&ctx_path)?;
+/// Aura registry refresh + optional aura distill + status (end of `ctx update`).
+pub async fn finalize_update_context(context: &str, ctx_path: &Path) -> Result<ContextStatus> {
+    let mut manifest = Manifest::load(ctx_path)?;
+    refresh_aura_registry(ctx_path, &mut manifest)?;
+    manifest.save(ctx_path)?;
 
-    if let Err(err) = aura_update::update_aura(&ctx_path).await {
+    if let Err(err) = aura_update::update_aura(ctx_path).await {
         eprintln!("aura update skipped: {err:#}");
     }
 
@@ -461,7 +407,7 @@ async fn bootstrap_procedural(context: &str) -> Result<()> {
 
 /// Returns `true` when every manifest entry for `(root, source_rel)` already has the matching
 /// `source_hash` and required blob state, meaning there's nothing to ingest.
-fn already_fully_indexed(
+pub(crate) fn already_fully_indexed(
     ctx_path: &Path,
     root_str: &str,
     source_rel_str: &str,
@@ -865,7 +811,7 @@ pub fn open_existing_context(context: &str) -> Result<PathBuf> {
 }
 
 /// Ensures the context directory exists, initializing it when invoked from **`add`** paths.
-fn ensure_context_for_add(context: &str) -> Result<PathBuf> {
+pub fn ensure_context_for_add(context: &str) -> Result<PathBuf> {
     let ctx_path = context_path(context);
     if ctx_path.exists() {
         return Ok(ctx_path);
@@ -901,7 +847,7 @@ enum SkipCheck {
     DeniedExtension,
 }
 
-fn classify_path(path: &Path) -> SkipCheck {
+pub(crate) fn classify_path(path: &Path) -> SkipCheck {
     use std::ffi::OsStr;
 
     if path.components().any(|component| {
@@ -935,7 +881,7 @@ fn should_skip_path(path: &Path) -> bool {
     !matches!(classify_path(path), SkipCheck::Keep)
 }
 
-fn parse_layer(value: &str) -> Result<ContentLayer> {
+pub(crate) fn parse_layer(value: &str) -> Result<ContentLayer> {
     match value {
         "semantic" => Ok(ContentLayer::Semantic),
         "procedural" => Ok(ContentLayer::Procedural),
@@ -949,13 +895,13 @@ fn hash_bytes(bytes: &[u8]) -> String {
     format!("sha256:{:x}", hasher.finalize())
 }
 
-fn hash_file(path: &Path) -> Result<String> {
+pub(crate) fn hash_file(path: &Path) -> Result<String> {
     Ok(hash_bytes(&fs::read(path)?))
 }
 
 /// Streaming SHA-256 of a file. Reads in 64 KiB blocks so even multi-gigabyte files hash
 /// without ballooning memory.
-fn hash_file_streaming(path: &Path) -> Result<String> {
+pub(crate) fn hash_file_streaming(path: &Path) -> Result<String> {
     let mut file = File::open(path).with_context(|| format!("open {}", path.display()))?;
     let mut hasher = Sha256::new();
     let mut buf = [0u8; 64 * 1024];
@@ -972,12 +918,12 @@ fn hash_file_streaming(path: &Path) -> Result<String> {
 }
 
 #[derive(Clone, Copy, Debug)]
-struct SourceStat {
+pub(crate) struct SourceStat {
     size: u64,
     mtime_unix: i64,
 }
 
-fn source_stat_from_metadata(metadata: &fs::Metadata) -> SourceStat {
+pub(crate) fn source_stat_from_metadata(metadata: &fs::Metadata) -> SourceStat {
     let mtime_unix = metadata
         .modified()
         .ok()
@@ -992,7 +938,7 @@ fn source_stat_from_metadata(metadata: &fs::Metadata) -> SourceStat {
 
 /// Fast path for large streamed files: when `(size, mtime)` and manifest/index state all match,
 /// skip re-hashing and decoding.
-fn already_fully_indexed_by_stat(
+pub(crate) fn already_fully_indexed_by_stat(
     ctx_path: &Path,
     root_str: &str,
     source_rel_str: &str,
@@ -1031,10 +977,49 @@ fn already_fully_indexed_by_stat(
     Ok(false)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum IndexFilePlan {
+    NeedsWork { size: u64 },
+    SkipAlreadyIndexed,
+    SkipTooLarge { size: u64 },
+}
+
+/// Cheap manifest/hash probe matching [`ingest_source_from_path`] skip rules (no decode).
+pub(crate) fn probe_index_file(
+    ctx_path: &Path,
+    root_str: &str,
+    source_rel: &Path,
+    abs: &Path,
+    with_content: bool,
+) -> Result<IndexFilePlan> {
+    let metadata = fs::metadata(abs)?;
+    let size = metadata.len();
+    let source_stat = source_stat_from_metadata(&metadata);
+    let rel_str = source_rel.display().to_string();
+    let stream = should_stream_plain_text(abs, source_rel, size);
+
+    if !stream && size > extraction::decoder::MAX_BINARY_DECODER_BYTES {
+        return Ok(IndexFilePlan::SkipTooLarge { size });
+    }
+
+    if stream {
+        if already_fully_indexed_by_stat(ctx_path, root_str, &rel_str, source_stat, with_content)?
+        {
+            return Ok(IndexFilePlan::SkipAlreadyIndexed);
+        }
+    } else {
+        let hash = hash_file(abs)?;
+        if already_fully_indexed(ctx_path, root_str, &rel_str, &hash, with_content)? {
+            return Ok(IndexFilePlan::SkipAlreadyIndexed);
+        }
+    }
+    Ok(IndexFilePlan::NeedsWork { size })
+}
+
 /// Decide whether `(abs_path, size)` should be ingested via the streaming plain-text path. We
 /// peek at [`PEEK_SNIFF_BYTES`] of content to let binary decoders claim before we commit to
 /// streaming.
-fn should_stream_plain_text(abs_path: &Path, rel: &Path, size: u64) -> bool {
+pub(crate) fn should_stream_plain_text(abs_path: &Path, rel: &Path, size: u64) -> bool {
     if size <= PLAIN_TEXT_STREAM_THRESHOLD {
         return false;
     }
@@ -1052,7 +1037,7 @@ fn should_stream_plain_text(abs_path: &Path, rel: &Path, size: u64) -> bool {
 
 /// Pre-categorized ingest outcome. Batch callers use the discriminator to bucket skips into the
 /// correct [`IngestionSummary`] counter without having to sniff error messages themselves.
-enum IngestOutcomeKind {
+pub(crate) enum IngestOutcomeKind {
     Decoded {
         outcome: AddOutcome,
         bytes_read: u64,
@@ -1068,7 +1053,7 @@ enum IngestOutcomeKind {
 /// Dispatches a filesystem-backed source file through either the in-memory or streaming ingest
 /// path based on size and peek-sniff. Returns a categorized outcome so batch callers can
 /// attribute skips without error-message sniffing.
-async fn ingest_source_from_path(
+pub(crate) async fn ingest_source_from_path(
     ctx_path: &Path,
     root: &Path,
     source_rel: &Path,

@@ -9,8 +9,6 @@ use crate::artifact::manifest_path;
 
 /// Current manifest schema version (spec §6.3).
 pub const MANIFEST_VERSION: &str = "0.2";
-/// Legacy v1 label used before the spec v0.2 alignment. Loaded but rewritten on save.
-const LEGACY_MANIFEST_VERSION: &str = "1";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ManifestConfig {
@@ -148,31 +146,18 @@ impl Manifest {
             ));
         }
 
-        let mut manifest: Manifest = serde_json::from_slice(
+        let manifest: Manifest = serde_json::from_slice(
             &fs::read(&path).with_context(|| format!("read {}", path.display()))?,
         )
         .with_context(|| format!("parse {}", path.display()))?;
 
-        if manifest.version == LEGACY_MANIFEST_VERSION {
-            manifest.version = MANIFEST_VERSION.to_string();
-        } else if manifest.version != MANIFEST_VERSION {
+        if manifest.version != MANIFEST_VERSION {
             anyhow::bail!(
                 "unsupported manifest version {:?} in {}: expected {:?}",
                 manifest.version,
                 path.display(),
                 MANIFEST_VERSION,
             );
-        }
-
-        if let Some(v) = manifest.config.extra.remove("promotion_threshold_days") {
-            if let Some(n) = v.as_u64() {
-                manifest.config.aura_update_threshold_days = n as u32;
-            }
-        }
-        if let Some(v) = manifest.config.extra.remove("promotion_min_occurrences") {
-            if let Some(n) = v.as_u64() {
-                manifest.config.aura_update_min_topics = n as u32;
-            }
         }
 
         Ok(manifest)
@@ -210,9 +195,7 @@ impl Manifest {
             files: Vec::new(),
             extra: Map::new(),
         });
-        self.sources
-            .last_mut()
-            .expect("source just pushed")
+        self.sources.last_mut().expect("source just pushed")
     }
 
     /// Finds the mutable `AuraFile` keyed by `path`, if present.
@@ -342,14 +325,6 @@ mod tests {
     }
 
     #[test]
-    fn load_migrates_legacy_1_version() {
-        let dir = tempfile::TempDir::new().expect("tempdir");
-        write_manifest(dir.path(), &minimal_manifest_json("1"));
-        let manifest = Manifest::load(dir.path()).expect("load");
-        assert_eq!(manifest.version, "0.2");
-    }
-
-    #[test]
     fn load_rejects_unknown_version() {
         let dir = tempfile::TempDir::new().expect("tempdir");
         write_manifest(dir.path(), &minimal_manifest_json("0.3"));
@@ -472,43 +447,12 @@ mod tests {
     }
 
     #[test]
-    fn load_migrates_legacy_promotion_config_fields() {
+    fn load_rejects_version_1() {
         let dir = tempfile::TempDir::new().expect("tempdir");
-        let json = r#"{
-          "version": "0.2",
-          "name": "demo",
-          "created_at": "2026-04-16T00:00:00Z",
-          "updated_at": "2026-04-16T00:00:00Z",
-          "config": {
-            "store_raw_content": false,
-            "promotion_threshold_days": 14,
-            "promotion_min_occurrences": 5,
-            "embedding_model": "fastembed:all-MiniLM-L6-v2",
-            "splade_enabled": true,
-            "extraction_model": "openai:gpt-5.4-nano"
-          },
-          "sources": [],
-          "aura": { "files": [] }
-        }"#;
-        write_manifest(dir.path(), json);
-
-        let mut manifest = Manifest::load(dir.path()).expect("load");
-        assert_eq!(manifest.config.aura_update_threshold_days, 14);
-        assert_eq!(manifest.config.aura_update_min_topics, 5);
-        assert!(
-            !manifest.config.extra.contains_key("promotion_threshold_days"),
-            "extra still has promotion_threshold_days"
-        );
-        assert!(
-            !manifest.config.extra.contains_key("promotion_min_occurrences"),
-            "extra still has promotion_min_occurrences"
-        );
-
-        manifest.save(dir.path()).expect("save");
-        let raw = fs::read_to_string(manifest_path(dir.path())).expect("read");
-        assert!(raw.contains("\"aura_update_threshold_days\""), "got {raw}");
-        assert!(raw.contains("\"aura_update_min_topics\""), "got {raw}");
-        assert!(!raw.contains("\"promotion_threshold_days\""), "got {raw}");
-        assert!(!raw.contains("\"promotion_min_occurrences\""), "got {raw}");
+        write_manifest(dir.path(), &minimal_manifest_json("1"));
+        let err = Manifest::load(dir.path()).expect_err("must fail");
+        let message = format!("{err:#}");
+        assert!(message.contains("\"1\""), "got {message}");
+        assert!(message.contains("\"0.2\""), "got {message}");
     }
 }

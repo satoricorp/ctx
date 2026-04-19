@@ -42,14 +42,16 @@ Binaries are built to `target/release/ctx` and `target/release/ctx-server`. Add 
 Typical flow:
 
 1. **`ctx init [name]`** — create a context and config under `~/.ctx` (or `CTX_PATH`).
-2. **`ctx add <path> [-c <context>] [--type semantic|procedural] [--with-content] [-v|--verbose]`** — index files or trees.
-3. **`ctx query <text> [-c <context>] [--type all|semantic|procedural] [--k <n>]`** — search indexed content.
-4. **`ctx update [-c <context>] [-v|--verbose]`** — refresh indexes when files change.
-5. **`ctx status [-c <context>]`** — see counts and dirty/pending state.
+2. **`ctx use <context>`** — set the default context in `~/.ctx/config.json` so `-c` is optional.
+3. **`ctx add <path> [-c <context>] [--type semantic|procedural] [--with-content] [-v|--verbose]`** — index files or trees. Large runs can prompt for **sync vs background** (see [Indexing jobs](#indexing-jobs-interactive--background)); use **`--yes`** / **`--no-interactive`** for scripts, **`--dry-run`** to preview work and a rough time estimate, **`--background`** (Unix) to detach a worker.
+4. **`ctx query <text> [-c <context>] [--type all|semantic|procedural] [--k <n>]`** — search indexed content.
+5. **`ctx update [-c <context>] [-v|--verbose]`** — refresh indexes when files change (same interactive/background flags as **`ctx add`**).
+6. **`ctx status [-c <context>]`** — see counts and dirty/pending state, plus **active indexing job** progress when a background or sync run has written `run/active.json` under the context.
 
 Other useful commands:
 
 - **`ctx list`** — list contexts.
+- **`ctx doctor [-c <context>] [--fix] [--json]`** — deep health checks + optional repairs.
 - **`ctx-server --port 8080`** — start the API (combine with `CTX_HOST` / `CTX_PORT` / `PORT` as needed).
 - **`ctx mcp --port 3000`** — MCP streamable HTTP server for local tooling.
 
@@ -58,6 +60,31 @@ Other useful commands:
 Batch ingestion behavior (`ctx add <dir>` and `ctx update`) now always prints a one-line summary at
 the end (`decoded / skipped ...`). Per-file skip diagnostics are hidden by default and shown only
 with `-v` / `--verbose`.
+
+Context resolution for commands that accept `-c` follows:
+
+1. explicit `-c/--context`
+2. `CTX_IMAGE` (legacy env alias for selected context name)
+3. config default from `ctx use <context>`
+4. current directory name inference
+
+`ctx status` is intentionally quick status-only. Deep integrity and repair flows live under
+`ctx doctor`.
+
+---
+
+## Indexing jobs (interactive + background)
+
+For **`ctx add`** on a directory and for **`ctx update`**, ctx can **plan** work up front (how many files need indexing, approximate size), show a **rough** duration estimate, and ask how to run the job when the estimate is large (defaults: about **60 seconds** or **10+ files**).
+
+- **Sync** — indexes in the current process; `run/active.json` under the context is updated as files complete so **`ctx status`** can show **percent done**, current file, and a very rough **ETA** once `~/.ctx/indexing-stats.json` has learned from past runs.
+- **Background (Unix)** — starts a **detached** worker (`setsid` so closing the terminal does not send SIGHUP). Logs go to **`run/job-<id>.log`**; progress is still visible via **`ctx status`**.
+
+**Resume:** each file commits manifest and index state when it finishes. If a job stops (**sleep**, laptop closed, API error), run **`ctx add …`** or **`ctx update`** again; already-indexed files are skipped.
+
+**Sleep vs disconnect:** background mode helps when the **terminal session** ends. **macOS sleep** still suspends the machine and can stall or time out network calls; for long overnight indexing use something like **`caffeinate -dims ctx add …`** (or the same wrapping **`ctx update`**).
+
+**Windows:** **`--background`** is not supported; use sync mode or run under WSL.
 
 ---
 
@@ -97,6 +124,7 @@ Routes include:
 | Variable | Role |
 | -------- | ---- |
 | **`CTX_PATH`** | Overrides the default contexts directory (`~/.ctx`). |
+| **`CTX_IMAGE`** | Legacy alias for selected context name when `-c` is omitted. |
 | **`CTX_HOST`** | API bind host for `ctx-server`. |
 | **`CTX_PORT`** | API port for `ctx-server`. |
 | **`PORT`** | Fallback port in hosted environments. |
@@ -115,51 +143,49 @@ Routes include:
 
 ## Dependency notes
 
-- **`helix-db`** stays on the upstream Git dependency by decision; the crates.io release is still not the path this repo uses.
+- **`helix-db`** is vendored under `vendor/helix/` from [HelixDB/helix-db](https://github.com/HelixDB/helix-db) (with a tiny stdout tweak); the crates.io release is still not what this repo uses.
 - **`llama-cpp-2`** and **`encoding_rs`** are now included directly for embedded local extraction.
 
 ---
 
-## Deployment: infra submodule at `infra/deploy`
+## Deployment: AWS ECS via `infra/`
 
-Platform-specific deploy logic (Terraform, Fly, Kubernetes, and so on) often lives in a **separate repository**. This repo expects an optional checkout at **`infra/deploy`** with two entrypoints used by **`.github/workflows/deploy.yml`**:
+This repo includes CDK infrastructure in `infra/` for AWS ECS Fargate deployment.
 
-- **`infra/deploy/scripts/deploy-infra.sh`** — provision or update infrastructure (optional; triggered via workflow dispatch).
-- **`infra/deploy/scripts/deploy-app.sh`** — deploy the application (receives **`IMAGE_TAG`**, e.g. `sha-<git-sha>`).
-
-### Add the submodule
-
-Use your real infra remote (HTTPS or SSH):
+### First-time manual deploy
 
 ```bash
-git submodule add <your-infra-repo-url> infra/deploy
-git commit -m "Add infra/deploy submodule for ctx deployment"
+cd infra
+bun install
+bunx cdk bootstrap
+bunx cdk deploy --require-approval never
 ```
 
-Your infra repo should expose the scripts above (and any helpers) under `scripts/`. Clone with submodules elsewhere:
+After deploy, check the stack output `LoadBalancerDNS` and verify:
 
 ```bash
-git clone --recurse-submodules <this-repo-url>
-# or after a normal clone:
-git submodule update --init --recursive
+curl "http://<LoadBalancerDNS>/status"
 ```
 
-### GitHub Actions
+### Continuous deploy with GitHub Actions
 
-The deploy workflow checks for **`infra/deploy/.git`** (a normal submodule has a `.git` file or directory there). It then uses repository secrets:
+`.github/workflows/deploy.yml` runs on pushes to `main` and performs:
 
-| Secret | Purpose |
-| ------ | ------- |
-| **`INFRA_REPO`** | GitHub repo for the infra checkout (for example **`owner/ctx-infra`**). |
-| **`DEPLOY_SSH_KEY`** | SSH private key with read access to **`INFRA_REPO`**. |
+1. AWS auth using GitHub OIDC
+2. `bunx cdk deploy --require-approval never` from `infra/`
 
-The workflow checks out **`INFRA_REPO`** into **`infra/deploy`** during the job when deploy is enabled. The **`actions/checkout`** step uses **`submodules: recursive`** so a committed **`infra/deploy`** submodule is populated on the runner and the deploy job can detect it.
+That CDK deploy rebuilds and pushes the Docker image, then rolls the ECS service.
 
-Manual runs can enable **“deploy infra”** via **`workflow_dispatch`** when you need **`deploy-infra.sh`**.
+Set these in your GitHub repository:
+
+| Type | Name | Purpose |
+| ---- | ---- | ------- |
+| Secret | `AWS_ROLE_TO_ASSUME` | IAM role ARN trusted by GitHub OIDC for deploy permissions |
+| Variable | `AWS_REGION` | AWS region for deploys (for example `us-east-1`) |
 
 ### Self-hosted without GitHub Actions
 
-You can still follow the same contract: build **`ctx-server`**, ship it in an image or binary, mount persistent storage at **`CTX_PATH`**, set secrets for API keys, and use **`GET /status`** for health. The v7 spec includes a minimal Docker-oriented example under **deployment** in `.context/attachments/ctx-codex-instructions-v7.md`.
+You can run the same `infra/` CDK commands from your own CI runner or local operator machine with AWS credentials.
 
 ---
 

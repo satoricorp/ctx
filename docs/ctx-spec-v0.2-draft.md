@@ -373,6 +373,8 @@ An implementation SHOULD provide a way to inspect drift and artifact health with
 
 An implementation MAY additionally provide a deeper health check (e.g. `ctx doctor`) that verifies blob integrity, aura registry consistency, and index presence. Such a command SHOULD run its checks concurrently, stream results fast-first so the operator receives immediate feedback, and offer a non-destructive repair mode that MAY include pruning orphan blobs, relocating stray aura topic files into `aura/topics/`, resyncing the aura registry, and rebuilding the index in place. Source files MUST NOT be deleted by a repair operation.
 
+Implementation note (non-normative): when a deep health command is provided, a machine-readable output mode (for example JSON) improves automation and agent interoperability.
+
 ### 10.4 Query
 
 An implementation SHOULD provide a way to retrieve semantic and procedural context.

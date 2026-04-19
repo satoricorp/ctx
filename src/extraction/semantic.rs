@@ -5,9 +5,7 @@ use serde_json::Value;
 use std::collections::BTreeSet;
 use std::sync::OnceLock;
 
-use super::json::{
-    deserialize_first_json_value, extract_json_object, normalize_llm_json_text,
-};
+use super::json::{deserialize_first_json_value, extract_json_object, normalize_llm_json_text};
 
 #[derive(Debug, Clone, Default)]
 pub struct Triple {
@@ -64,9 +62,8 @@ async fn extract_semantic_with_llm(content: &str, source_hint: &str) -> Result<S
 }
 
 fn parse_semantic_llm_output(raw: &str) -> Result<SemanticExtraction> {
-    let parsed: SemanticLlmOutput = parse_semantic_llm_output_inner(raw, 0).map_err(|error| {
-        anyhow!("failed to parse semantic extraction JSON: {error}")
-    })?;
+    let parsed: SemanticLlmOutput = parse_semantic_llm_output_inner(raw, 0)
+        .map_err(|error| anyhow!("failed to parse semantic extraction JSON: {error}"))?;
 
     let mut entities = BTreeSet::new();
     for entity in parsed.entities {
@@ -290,8 +287,8 @@ fn compact(text: &str, max_chars: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use crate::extraction::json::deserialize_first_json_value;
     use super::*;
+    use crate::extraction::json::deserialize_first_json_value;
 
     #[test]
     fn parses_semantic_json_with_prefix_suffix() {

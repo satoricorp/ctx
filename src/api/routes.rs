@@ -152,9 +152,7 @@ pub async fn query_handler(
             topics: summary.topics,
         },
         drift_detected: drift.drift_detected,
-        drift_hint: drift
-            .drift_detected
-            .then(|| crate::DRIFT_HINT.to_string()),
+        drift_hint: drift.drift_detected.then(|| crate::DRIFT_HINT.to_string()),
     }))
 }
 

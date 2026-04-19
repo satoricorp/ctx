@@ -100,6 +100,42 @@ pub fn chunk_content(source_path: &Path, content: &str) -> Vec<Chunk> {
     }
 }
 
+/// Merge consecutive chunks until adding the next would exceed `max_tokens` ([`token_count`]).
+/// Set **`CTX_SEMANTIC_CHUNK_MERGE_MAX_TOKENS`** at ingest time to enable (default `0` = disabled).
+pub fn merge_chunks_by_token_budget(chunks: Vec<Chunk>, max_tokens: usize) -> Vec<Chunk> {
+    if max_tokens == 0 || chunks.len() <= 1 {
+        return chunks;
+    }
+
+    let mut out: Vec<Chunk> = Vec::with_capacity(chunks.len());
+    let mut acc: Option<Chunk> = None;
+
+    for chunk in chunks {
+        match acc.take() {
+            None => acc = Some(chunk),
+            Some(mut prev) => {
+                let merged = format!("{}\n\n{}", prev.index_text, chunk.index_text);
+                if token_count(&merged) <= max_tokens {
+                    prev.content = format!("{}\n\n{}", prev.content, chunk.content);
+                    prev.index_text = merged;
+                    prev.char_end = chunk.char_end;
+                    if prev.strategy != chunk.strategy {
+                        prev.strategy = format!("{}+{}", prev.strategy, chunk.strategy);
+                    }
+                    acc = Some(prev);
+                } else {
+                    out.push(prev);
+                    acc = Some(chunk);
+                }
+            }
+        }
+    }
+    if let Some(last) = acc {
+        out.push(last);
+    }
+    out
+}
+
 pub fn token_count(content: &str) -> usize {
     content.chars().count() / 4
 }
@@ -399,6 +435,39 @@ struct ParsedTurn {
     text: String,
     session_id: Option<String>,
     is_session_boundary: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn merge_chunks_respects_token_budget() {
+        let chunks = vec![
+            Chunk::new("aa", "sentence-window", 0, 10),
+            Chunk::new("bb", "sentence-window", 10, 20),
+            Chunk::new(
+                "cc long chunk text that pushes the merged window over a small budget",
+                "sentence-window",
+                20,
+                100,
+            ),
+        ];
+        let merged = merge_chunks_by_token_budget(chunks, 12);
+        assert!(
+            merged.len() < 3,
+            "expected merge to shrink chunk list, got {}",
+            merged.len()
+        );
+    }
+
+    #[test]
+    fn merge_chunks_disabled_when_max_zero() {
+        let a = Chunk::new("x", "s", 0, 1);
+        let b = Chunk::new("y", "s", 1, 2);
+        let merged = merge_chunks_by_token_budget(vec![a.clone(), b.clone()], 0);
+        assert_eq!(merged.len(), 2);
+    }
 }
 
 fn parse_turns(content: &str) -> Vec<ParsedTurn> {

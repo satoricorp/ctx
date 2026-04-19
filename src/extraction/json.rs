@@ -101,8 +101,7 @@ mod tests {
 
     #[test]
     fn deserialize_first_value_ignores_second_concatenated_object() {
-        let v: Obj =
-            deserialize_first_json_value(r#"{"a":1}{"a":2}"#).expect("parse first only");
+        let v: Obj = deserialize_first_json_value(r#"{"a":1}{"a":2}"#).expect("parse first only");
         assert_eq!(v, Obj { a: 1 });
     }
 }

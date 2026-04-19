@@ -1,12 +1,12 @@
 use anyhow::{anyhow, bail, Context, Result};
 use encoding_rs::UTF_8;
+use indicatif::{ProgressBar, ProgressStyle};
 use llama_cpp_2::context::params::LlamaContextParams;
 use llama_cpp_2::llama_backend::LlamaBackend;
 use llama_cpp_2::llama_batch::LlamaBatch;
 use llama_cpp_2::model::params::LlamaModelParams;
 use llama_cpp_2::model::{AddBos, LlamaModel};
 use llama_cpp_2::sampling::LlamaSampler;
-use indicatif::{ProgressBar, ProgressStyle};
 use reqwest::blocking::Client;
 use std::collections::HashMap;
 use std::fs;
@@ -219,19 +219,23 @@ fn openai_chat_json(prompt: &str, model: &str) -> Result<String> {
         bail!("OpenAI API error ({}): {}", status, body_text.trim());
     }
 
+    if status.as_u16() == 200 {
+        super::openai_ok::log_openai_success("chat/completions");
+    }
+
     let v: serde_json::Value =
         serde_json::from_str(&body_text).context("failed to parse OpenAI JSON response")?;
     let text = v["choices"][0]["message"]["content"]
         .as_str()
-        .ok_or_else(|| anyhow!("unexpected OpenAI response shape (missing choices[0].message.content)"))?;
+        .ok_or_else(|| {
+            anyhow!("unexpected OpenAI response shape (missing choices[0].message.content)")
+        })?;
     Ok(text.to_string())
 }
 
 fn anthropic_messages_json(prompt: &str, model: &str) -> Result<String> {
     let api_key = std::env::var("ANTHROPIC_API_KEY").map_err(|_| {
-        anyhow!(
-            "ANTHROPIC_API_KEY is not set (required for extraction model anthropic:{model})"
-        )
+        anyhow!("ANTHROPIC_API_KEY is not set (required for extraction model anthropic:{model})")
     })?;
 
     let client = Client::builder()
@@ -305,8 +309,7 @@ fn ensure_local_extraction_model_for_config(
 
 fn download_model(spec: LocalModelSpec, destination: &Path, show_progress: bool) -> Result<()> {
     // Large GGUFs take a long time; reqwest's default timeout is too short for multi‑GB files.
-    const DOWNLOAD_TIMEOUT: std::time::Duration =
-        std::time::Duration::from_secs(7 * 24 * 3600);
+    const DOWNLOAD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 3600);
     let client = Client::builder()
         .user_agent("ctx/0.1")
         .timeout(DOWNLOAD_TIMEOUT)
@@ -315,12 +318,7 @@ fn download_model(spec: LocalModelSpec, destination: &Path, show_progress: bool)
     let response = client
         .get(spec.url)
         .send()
-        .with_context(|| {
-            format!(
-                "failed to connect for {} (URL {})",
-                spec.model_id, spec.url
-            )
-        })?;
+        .with_context(|| format!("failed to connect for {} (URL {})", spec.model_id, spec.url))?;
 
     let status = response.status();
     let mut response = if !status.is_success() {

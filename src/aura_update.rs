@@ -41,11 +41,9 @@ pub struct StableTopic {
 
 /// Production entry point. Invoked from `update_context`.
 pub async fn update_aura(ctx_path: &Path) -> Result<AuraUpdateOutcome> {
-    update_aura_internal(
-        ctx_path,
-        extraction_available(),
-        |prompt| async move { crate::models::llm::complete_json(&prompt).await },
-    )
+    update_aura_internal(ctx_path, extraction_available(), |prompt| async move {
+        crate::models::llm::complete_json(&prompt).await
+    })
     .await
 }
 
@@ -144,8 +142,7 @@ where
 
 /// True when the configured extraction model has a callable backend.
 fn extraction_available() -> bool {
-    crate::models::llm::should_use_cloud_extraction()
-        || crate::models::llm::should_use_local_llm()
+    crate::models::llm::should_use_cloud_extraction() || crate::models::llm::should_use_local_llm()
 }
 
 fn collect_stable_topics(
@@ -249,8 +246,7 @@ fn extract_auto_updated_section(existing: &str) -> Option<String> {
 /// Locate the byte range of the current or legacy auto-updated section
 /// (heading line through the line before the next H2 or EOF).
 fn locate_auto_updated_section(existing: &str) -> Option<(usize, usize)> {
-    let is_managed_heading =
-        |s: &str| s == AURA_UPDATE_HEADING || s == LEGACY_PROMOTED_HEADING;
+    let is_managed_heading = |s: &str| s == AURA_UPDATE_HEADING || s == LEGACY_PROMOTED_HEADING;
 
     let mut cursor = 0usize;
     let mut heading_start: Option<usize> = None;
@@ -313,8 +309,8 @@ fn hash_bytes(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
     use crate::{
-        aura_path as aura_dir, init_context, open_existing_context, test_support,
-        write_aura_file, AuraWriteMode,
+        aura_path as aura_dir, init_context, open_existing_context, test_support, write_aura_file,
+        AuraWriteMode,
     };
     use tempfile::TempDir;
 
@@ -368,9 +364,9 @@ mod tests {
 
     fn fake_distiller(body: &'static str) -> impl FnOnce(String) -> BoxedResultFuture {
         move |_prompt| {
-            Box::pin(async move {
-                Ok(serde_json::json!({ "distilled_markdown": body }).to_string())
-            })
+            Box::pin(
+                async move { Ok(serde_json::json!({ "distilled_markdown": body }).to_string()) },
+            )
         }
     }
 
@@ -384,10 +380,9 @@ mod tests {
         init_context("promote-empty").await.expect("init");
         let ctx_path = open_existing_context("promote-empty").expect("open");
 
-        let outcome =
-            update_aura_internal(&ctx_path, true, fake_distiller("should not be called"))
-                .await
-                .expect("run");
+        let outcome = update_aura_internal(&ctx_path, true, fake_distiller("should not be called"))
+            .await
+            .expect("run");
 
         assert_eq!(outcome.candidates_considered, 0);
         assert_eq!(outcome.skipped, Some(SkippedReason::NoStableTopics));
@@ -399,10 +394,20 @@ mod tests {
         let _env = setup_env();
         init_context("promote-few").await.expect("init");
 
-        write_aura_file("promote-few", "aura/a.md", "topic a", AuraWriteMode::Replace)
-            .expect("write a");
-        write_aura_file("promote-few", "aura/b.md", "topic b", AuraWriteMode::Replace)
-            .expect("write b");
+        write_aura_file(
+            "promote-few",
+            "aura/a.md",
+            "topic a",
+            AuraWriteMode::Replace,
+        )
+        .expect("write a");
+        write_aura_file(
+            "promote-few",
+            "aura/b.md",
+            "topic b",
+            AuraWriteMode::Replace,
+        )
+        .expect("write b");
 
         let ctx_path = open_existing_context("promote-few").expect("open");
         let mut manifest = Manifest::load(&ctx_path).expect("load");
@@ -410,10 +415,9 @@ mod tests {
         backdate_topic(&mut manifest, "aura/topics/b.md", 30);
         manifest.save(&ctx_path).expect("save");
 
-        let outcome =
-            update_aura_internal(&ctx_path, true, fake_distiller("should not be called"))
-                .await
-                .expect("run");
+        let outcome = update_aura_internal(&ctx_path, true, fake_distiller("should not be called"))
+            .await
+            .expect("run");
 
         assert_eq!(outcome.candidates_considered, 2);
         assert_eq!(
@@ -442,10 +446,9 @@ mod tests {
         }
 
         let ctx_path = open_existing_context("promote-fresh").expect("open");
-        let outcome =
-            update_aura_internal(&ctx_path, true, fake_distiller("should not be called"))
-                .await
-                .expect("run");
+        let outcome = update_aura_internal(&ctx_path, true, fake_distiller("should not be called"))
+            .await
+            .expect("run");
 
         assert_eq!(outcome.candidates_considered, 0);
         assert_eq!(outcome.skipped, Some(SkippedReason::NoStableTopics));
@@ -531,8 +534,9 @@ mod tests {
         }
         manifest.save(&ctx_path).expect("save");
 
-        let outcome =
-            update_aura_internal(&ctx_path, true, fake_distiller("promoted body")).await.expect("run");
+        let outcome = update_aura_internal(&ctx_path, true, fake_distiller("promoted body"))
+            .await
+            .expect("run");
         assert!(outcome.skipped.is_none());
 
         let final_content = fs::read_to_string(&aura_md).expect("read");

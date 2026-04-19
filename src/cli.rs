@@ -1,11 +1,13 @@
 pub mod add;
 pub mod doctor;
+pub mod index_prompt;
 pub mod init;
 pub mod list;
 pub mod mcp;
 pub mod publish;
 pub mod pull;
 pub mod query;
+pub mod run_index_job;
 pub mod scope;
 pub mod status;
 pub mod use_context;
@@ -35,6 +37,9 @@ enum Commands {
     Mcp(mcp::McpArgs),
     Publish(publish::PublishArgs),
     Pull(pull::PullArgs),
+    /// Internal: run a background indexing job from `run/job-*.json`.
+    #[command(hide = true)]
+    RunIndexJob(run_index_job::RunIndexJobArgs),
 }
 
 pub async fn run() -> Result<()> {
@@ -50,5 +55,6 @@ pub async fn run() -> Result<()> {
         Commands::Mcp(args) => mcp::run(args).await,
         Commands::Publish(args) => publish::run(args).await,
         Commands::Pull(args) => pull::run(args).await,
+        Commands::RunIndexJob(args) => run_index_job::run(args).await,
     }
 }
