@@ -21,14 +21,14 @@ export function InstallCommand() {
 
   return (
     <div
-      className={`${GeistMono.className} flex w-full max-w-xl items-center gap-3 rounded-xl bg-slate-100 px-4 py-3 text-slate-800 dark:bg-zinc-800 dark:text-zinc-100`}
+      className={`${GeistMono.className} border-border bg-muted text-foreground flex w-full max-w-xl items-center gap-3 rounded-xl border px-4 py-3`}
     >
       <code className="min-w-0 flex-1 truncate text-sm">{INSTALL_CMD}</code>
       <button
         type="button"
         onClick={copy}
         aria-label={copied ? "Copied" : "Copy install command"}
-        className="shrink-0 rounded-lg border border-slate-200 bg-white p-2 text-slate-700 transition hover:bg-slate-50 dark:border-zinc-600 dark:bg-zinc-700 dark:text-zinc-100 dark:hover:bg-zinc-600"
+        className="border-border bg-background text-foreground hover:bg-muted shrink-0 rounded-lg border p-2 transition"
       >
         {copied ? (
           <Check className="size-4" aria-hidden />
