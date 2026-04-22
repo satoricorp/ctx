@@ -32,6 +32,12 @@ The stack image source is `infra/docker/ecs.Dockerfile`.
    bunx cdk bootstrap
    ```
 
+   If you previously hit `ENAMETOOLONG` during synth/deploy, remove the old output and retry:
+
+   ```bash
+   rm -rf cdk.out
+   ```
+
 4. **Deploy once manually**
 
    ```bash

@@ -1,5 +1,6 @@
 import * as path from "node:path";
 import * as cdk from "aws-cdk-lib";
+import { IgnoreMode } from "aws-cdk-lib";
 import { Construct } from "constructs";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as ecs from "aws-cdk-lib/aws-ecs";
@@ -28,10 +29,29 @@ export class CtxEcsStack extends cdk.Stack {
 
     // CDK builds this Dockerfile on deploy, pushes it to ECR assets, and
     // updates the ECS service task definition with the new image digest.
+    // __dirname is infra/lib at synth time — two levels up is the repo root.
     const imageAsset = new ecrAssets.DockerImageAsset(this, "CtxServerImage", {
-      directory: path.join(__dirname, "../..", ".."),
+      directory: path.join(__dirname, "..", ".."),
       file: "infra/docker/ecs.Dockerfile",
       platform: ecrAssets.Platform.LINUX_AMD64,
+      // Repo root includes infra/cdk.out; without excludes, asset staging can
+      // recurse (cdk.out inside staged copy → ENAMETOOLONG).
+      exclude: [
+        "**/cdk.out",
+        "**/cdk.out/**",
+        ".git",
+        "**/.git",
+        "**/.git/**",
+        ".cursor",
+        "**/.cursor",
+        "target",
+        "**/target",
+        "infra/node_modules",
+        "node_modules",
+        "**/node_modules",
+        "www",
+      ],
+      ignoreMode: IgnoreMode.GLOB,
     });
 
     const logGroup = new logs.LogGroup(this, "CtxLogGroup", {

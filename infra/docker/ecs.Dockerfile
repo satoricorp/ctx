@@ -1,14 +1,28 @@
-FROM rust:1.86-bookworm AS build
+# MSRV: transitive crates (e.g. ort, zip, darling) require rustc ≥ 1.88.
+# ort-sys links prebuilt ONNX Runtime objects that reference glibc ≥ 2.38 (__isoc23_*);
+# Bookworm’s glibc is too old — use trixie for link + runtime compatibility.
+FROM rust:1.88-trixie AS build
 
 WORKDIR /app
+
+# Native deps: bindgen needs libclang; llama-cpp-sys runs cmake + optional rustfmt on generated code.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        clang \
+        cmake \
+        libclang-dev \
+    && rm -rf /var/lib/apt/lists/* \
+    && rustup component add rustfmt
 
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 COPY docker ./docker
+# Path dependency (see Cargo.toml); helix-db also pulls helix-macros + metrics via relative paths.
+COPY vendor/helix ./vendor/helix
 
 RUN cargo build --release --bin ctx --bin ctx-server
 
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
