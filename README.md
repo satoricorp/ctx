@@ -105,6 +105,7 @@ The basic model is:
 2. `ctx add <path>` indexes files into that context.
 3. `ctx query "<question>"` asks against what was indexed.
 4. `ctx update` refreshes the index when files change.
+5. `ctx notes` opens the context's local notes directory.
 
 If you only want the shortest possible flow, this is it:
 
@@ -113,6 +114,7 @@ ctx init demo
 ctx use demo
 ctx add .
 ctx query "what are the main entry points?"
+ctx notes
 ```
 
 ## Typical Local Flow
@@ -125,6 +127,7 @@ ctx init my-project
 ctx use my-project
 ctx add .
 ctx query "what are the main entry points?"
+ctx notes
 ```
 
 After editing that project later:
@@ -137,6 +140,8 @@ ctx query "what changed in the auth flow?"
 ## Notes In A Context
 
 Each context gets a `notes/` directory.
+
+Use `ctx notes` to open it in your file browser.
 
 The important files are:
 
