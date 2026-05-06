@@ -50,16 +50,16 @@ pub struct AddResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QueryResponse {
     pub results: Vec<crate::retrieval::query::QueryResult>,
-    pub aura: AuraSummaryResponse,
+    pub notes: NotesSummaryResponse,
     pub drift_detected: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub drift_hint: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct AuraSummaryResponse {
+pub struct NotesSummaryResponse {
     pub index: Option<String>,
-    pub aura: Option<String>,
+    pub summary: Option<String>,
     pub topics: Vec<String>,
 }
 
@@ -141,14 +141,14 @@ pub async fn query_handler(
     .map_err(internal_error)?;
 
     let ctx_path = crate::open_existing_context(&request.ctx).map_err(internal_error)?;
-    let summary = crate::read_aura_summary(&ctx_path).map_err(internal_error)?;
+    let summary = crate::read_notes_summary(&ctx_path).map_err(internal_error)?;
     let drift = crate::drift_state(&ctx_path).map_err(internal_error)?;
 
     Ok(Json(QueryResponse {
         results,
-        aura: AuraSummaryResponse {
+        notes: NotesSummaryResponse {
             index: summary.index,
-            aura: summary.aura,
+            summary: summary.summary,
             topics: summary.topics,
         },
         drift_detected: drift.drift_detected,
@@ -262,10 +262,11 @@ mod tests {
             .expect("test lock poisoned");
         let ctx_root = TempDir::new().expect("ctx root");
         let home_root = TempDir::new().expect("home root");
+        let saved_openai = std::env::var("OPENAI_API_KEY").ok();
 
         std::env::set_var("CTX_PATH", ctx_root.path());
         std::env::set_var("HOME", home_root.path());
-        std::env::set_var("CTX_DISABLE_FASTEMBED", "1");
+        std::env::set_var("OPENAI_API_KEY", "test-openai-key");
 
         crate::init_context("api-status")
             .await
@@ -289,6 +290,9 @@ mod tests {
 
         std::env::remove_var("CTX_PATH");
         std::env::remove_var("HOME");
-        std::env::remove_var("CTX_DISABLE_FASTEMBED");
+        match saved_openai {
+            Some(value) => std::env::set_var("OPENAI_API_KEY", value),
+            None => std::env::remove_var("OPENAI_API_KEY"),
+        }
     }
 }

@@ -60,7 +60,7 @@ pub async fn run(args: UpdateArgs) -> Result<()> {
         {
             if plan.is_empty() {
                 let status = crate::finalize_update_context(&context, &ctx_path).await?;
-                println!("updated {} (index already current; aura refreshed)", status.name);
+                println!("updated {} (index already current; notes refreshed)", status.name);
                 return Ok(());
             }
             index_job::start_background_index_job(

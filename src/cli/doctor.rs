@@ -9,7 +9,7 @@ use crate::doctor::{run_doctor, tier_label, CheckReport};
 pub struct DoctorArgs {
     #[command(flatten)]
     pub select: ContextSelectArgs,
-    /// Apply non-destructive repairs (prune orphan blobs, sync aura registry,
+    /// Apply non-destructive repairs (prune orphan blobs, sync notes registry,
     /// relocate stray root-level topics, rebuild the index if needed).
     #[arg(long = "fix")]
     pub fix: bool,

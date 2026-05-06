@@ -12,7 +12,7 @@ pub struct ContextSelectArgs {
 
 /// Resolve context in precedence order:
 /// 1) `--context` / `-c`
-/// 2) env **CTX_IMAGE** (legacy alias for selected context)
+/// 2) env **CTX_IMAGE**
 /// 3) config default (`~/.ctx/config.json` -> `default_context`)
 /// 4) inferred context from cwd basename, only if that context already exists
 pub fn resolve_context_name(select: &ContextSelectArgs) -> Result<String> {

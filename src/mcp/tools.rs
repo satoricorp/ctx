@@ -33,16 +33,16 @@ pub struct QueryToolInput {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct QueryToolOutput {
     pub results: Vec<QueryResult>,
-    pub aura: AuraSummaryDto,
+    pub notes: NotesSummaryDto,
     pub drift_detected: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub drift_hint: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default)]
-pub struct AuraSummaryDto {
+pub struct NotesSummaryDto {
     pub index: Option<String>,
-    pub aura: Option<String>,
+    pub summary: Option<String>,
     pub topics: Vec<String>,
 }
 
@@ -63,20 +63,20 @@ pub struct RecordToolOutput {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct AuraReadToolInput {
+pub struct NotesReadToolInput {
     pub ctx: String,
     pub path: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct AuraReadToolOutput {
+pub struct NotesReadToolOutput {
     pub path: String,
     pub content: String,
     pub hash: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct AuraWriteToolInput {
+pub struct NotesWriteToolInput {
     pub ctx: String,
     pub path: String,
     pub content: String,
@@ -85,7 +85,7 @@ pub struct AuraWriteToolInput {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct AuraWriteToolOutput {
+pub struct NotesWriteToolOutput {
     pub path: String,
     pub hash: String,
 }

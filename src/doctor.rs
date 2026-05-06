@@ -11,9 +11,9 @@ use std::path::Path;
 use tokio::sync::mpsc;
 use walkdir::WalkDir;
 
-use crate::artifact::{aura_path, blobs_path, index_path, Manifest};
+use crate::artifact::{notes_path, blobs_path, index_path, Manifest};
 use crate::{
-    canonical_aura_path, drift_state, open_existing_context, rebuild_index, refresh_aura_registry,
+    canonical_notes_path, drift_state, open_existing_context, rebuild_index, refresh_notes_registry,
     verify_context, IntegrityStatus,
 };
 
@@ -98,8 +98,8 @@ impl CheckReport {
 #[derive(Debug)]
 enum FixAction {
     PruneOrphanBlobs { hashes: Vec<String> },
-    RemoveAuraEntries { paths: Vec<String> },
-    RegisterAuraFiles,
+    RemoveNoteEntries { paths: Vec<String> },
+    RegisterNoteFiles,
     RelocateRootTopics { paths: Vec<String> },
     RebuildIndex,
 }
@@ -140,10 +140,10 @@ pub async fn run_doctor(
     handles.push(tokio::task::spawn_blocking(move || check_config_sanity(&p)));
     let p = ctx_path.clone();
     handles.push(tokio::task::spawn_blocking(move || {
-        check_aura_missing_files(&p)
+        check_notes_missing_files(&p)
     }));
     let p = ctx_path.clone();
-    handles.push(tokio::task::spawn_blocking(move || check_aura_unregistered(&p)));
+    handles.push(tokio::task::spawn_blocking(move || check_notes_unregistered(&p)));
     let p = ctx_path.clone();
     handles.push(tokio::task::spawn_blocking(move || check_index_presence(&p)));
 
@@ -241,10 +241,10 @@ fn check_manifest_schema(ctx_path: &Path) -> (CheckReport, Option<FixAction>) {
                 NAME,
                 Tier::Instant,
                 format!(
-                    "version {} ({} sources, {} aura files)",
+                    "version {} ({} sources, {} notes files)",
                     m.version,
                     m.sources.len(),
-                    m.aura.files.len()
+                    m.notes.files.len()
                 ),
             ),
             None,
@@ -268,11 +268,11 @@ fn check_config_sanity(ctx_path: &Path) -> (CheckReport, Option<FixAction>) {
         }
     };
     let mut issues: Vec<String> = Vec::new();
-    if manifest.config.aura_update_threshold_days == 0 {
-        issues.push("aura_update_threshold_days = 0".into());
+    if manifest.config.notes_update_threshold_days == 0 {
+        issues.push("notes_update_threshold_days = 0".into());
     }
-    if manifest.config.aura_update_min_topics == 0 {
-        issues.push("aura_update_min_topics = 0".into());
+    if manifest.config.notes_update_min_topics == 0 {
+        issues.push("notes_update_min_topics = 0".into());
     }
     if manifest.config.extraction_model.trim().is_empty() {
         issues.push("extraction_model empty".into());
@@ -294,8 +294,8 @@ fn check_config_sanity(ctx_path: &Path) -> (CheckReport, Option<FixAction>) {
     }
 }
 
-fn check_aura_missing_files(ctx_path: &Path) -> (CheckReport, Option<FixAction>) {
-    const NAME: &str = "aura_registry_missing";
+fn check_notes_missing_files(ctx_path: &Path) -> (CheckReport, Option<FixAction>) {
+    const NAME: &str = "notes_registry_missing";
     let manifest = match Manifest::load(ctx_path) {
         Ok(m) => m,
         Err(err) => {
@@ -306,7 +306,7 @@ fn check_aura_missing_files(ctx_path: &Path) -> (CheckReport, Option<FixAction>)
         }
     };
     let missing: Vec<String> = manifest
-        .aura
+        .notes
         .files
         .iter()
         .filter(|entry| !ctx_path.join(&entry.path).exists())
@@ -315,20 +315,20 @@ fn check_aura_missing_files(ctx_path: &Path) -> (CheckReport, Option<FixAction>)
 
     if missing.is_empty() {
         (
-            CheckReport::ok(NAME, Tier::Instant, "all registered aura files exist"),
+            CheckReport::ok(NAME, Tier::Instant, "all registered notes files exist"),
             None,
         )
     } else {
-        let detail = format!("{} missing aura entries", missing.len());
-        let action = FixAction::RemoveAuraEntries {
+        let detail = format!("{} missing notes entries", missing.len());
+        let action = FixAction::RemoveNoteEntries {
             paths: missing.clone(),
         };
         (CheckReport::warn(NAME, Tier::Instant, detail), Some(action))
     }
 }
 
-fn check_aura_unregistered(ctx_path: &Path) -> (CheckReport, Option<FixAction>) {
-    const NAME: &str = "aura_registry_unregistered";
+fn check_notes_unregistered(ctx_path: &Path) -> (CheckReport, Option<FixAction>) {
+    const NAME: &str = "notes_registry_unregistered";
     let manifest = match Manifest::load(ctx_path) {
         Ok(m) => m,
         Err(err) => {
@@ -338,16 +338,16 @@ fn check_aura_unregistered(ctx_path: &Path) -> (CheckReport, Option<FixAction>) 
             )
         }
     };
-    let dir = aura_path(ctx_path);
+    let dir = notes_path(ctx_path);
     if !dir.exists() {
         return (
-            CheckReport::ok(NAME, Tier::Instant, "no aura directory"),
+            CheckReport::ok(NAME, Tier::Instant, "no notes directory"),
             None,
         );
     }
 
     let registered: std::collections::HashSet<String> = manifest
-        .aura
+        .notes
         .files
         .iter()
         .map(|e| e.path.clone())
@@ -374,7 +374,7 @@ fn check_aura_unregistered(ctx_path: &Path) -> (CheckReport, Option<FixAction>) 
         if !registered.contains(&rel_str) {
             unregistered.push(rel_str.clone());
         }
-        let canonical = canonical_aura_path(&rel_str);
+        let canonical = canonical_notes_path(&rel_str);
         if canonical != rel_str {
             stray_roots.push(rel_str);
         }
@@ -382,7 +382,7 @@ fn check_aura_unregistered(ctx_path: &Path) -> (CheckReport, Option<FixAction>) 
 
     if unregistered.is_empty() && stray_roots.is_empty() {
         return (
-            CheckReport::ok(NAME, Tier::Instant, "aura registry is in sync"),
+            CheckReport::ok(NAME, Tier::Instant, "notes registry is in sync"),
             None,
         );
     }
@@ -393,7 +393,7 @@ fn check_aura_unregistered(ctx_path: &Path) -> (CheckReport, Option<FixAction>) 
     }
     if !stray_roots.is_empty() {
         parts.push(format!(
-            "{} stray root-level topic(s)",
+            "{} root-level note(s)",
             stray_roots.len()
         ));
     }
@@ -403,7 +403,7 @@ fn check_aura_unregistered(ctx_path: &Path) -> (CheckReport, Option<FixAction>) 
             paths: stray_roots,
         }
     } else {
-        FixAction::RegisterAuraFiles
+        FixAction::RegisterNoteFiles
     };
 
     (
@@ -543,19 +543,19 @@ fn apply_fix(
             }
             record_fix(reports, tx, "blob_integrity", removed);
         }
-        FixAction::RemoveAuraEntries { paths } => {
+        FixAction::RemoveNoteEntries { paths } => {
             let mut manifest = Manifest::load(ctx_path)?;
-            let before = manifest.aura.files.len();
-            manifest.aura.files.retain(|entry| !paths.contains(&entry.path));
-            if manifest.aura.files.len() != before {
+            let before = manifest.notes.files.len();
+            manifest.notes.files.retain(|entry| !paths.contains(&entry.path));
+            if manifest.notes.files.len() != before {
                 manifest.save(ctx_path)?;
             }
-            record_fix(reports, tx, "aura_registry_missing", paths);
+            record_fix(reports, tx, "notes_registry_missing", paths);
         }
         FixAction::RelocateRootTopics { paths } => {
             let mut relocated: Vec<String> = Vec::new();
             for rel in paths {
-                let canonical = canonical_aura_path(&rel);
+                let canonical = canonical_notes_path(&rel);
                 if canonical == rel {
                     continue;
                 }
@@ -573,19 +573,19 @@ fn apply_fix(
                 relocated.push(format!("{rel} -> {canonical}"));
             }
             let mut manifest = Manifest::load(ctx_path)?;
-            refresh_aura_registry(ctx_path, &mut manifest)?;
+            refresh_notes_registry(ctx_path, &mut manifest)?;
             manifest.save(ctx_path)?;
-            record_fix(reports, tx, "aura_registry_unregistered", relocated);
+            record_fix(reports, tx, "notes_registry_unregistered", relocated);
         }
-        FixAction::RegisterAuraFiles => {
+        FixAction::RegisterNoteFiles => {
             let mut manifest = Manifest::load(ctx_path)?;
-            refresh_aura_registry(ctx_path, &mut manifest)?;
+            refresh_notes_registry(ctx_path, &mut manifest)?;
             manifest.save(ctx_path)?;
             record_fix(
                 reports,
                 tx,
-                "aura_registry_unregistered",
-                vec!["refreshed aura registry".into()],
+                "notes_registry_unregistered",
+                vec!["refreshed notes registry".into()],
             );
         }
         FixAction::RebuildIndex => {
@@ -618,7 +618,7 @@ pub fn tier_label(tier: Tier) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{init_context, test_support, write_aura_file, AuraWriteMode};
+    use crate::{init_context, test_support, write_notes_file, NotesWriteMode};
     use tempfile::TempDir;
     use tokio::sync::mpsc;
 
@@ -626,16 +626,13 @@ mod tests {
         _tempdir: TempDir,
         _home_root: TempDir,
         saved_openai: Option<String>,
-        saved_anthropic: Option<String>,
     }
 
     impl Drop for DocEnv {
         fn drop(&mut self) {
-            std::env::remove_var("CTX_DISABLE_FASTEMBED");
             std::env::remove_var("CTX_PATH");
             std::env::remove_var("HOME");
             restore_env("OPENAI_API_KEY", self.saved_openai.as_deref());
-            restore_env("ANTHROPIC_API_KEY", self.saved_anthropic.as_deref());
         }
     }
 
@@ -650,17 +647,13 @@ mod tests {
         let tempdir = TempDir::new().expect("tempdir");
         let home_root = TempDir::new().expect("home root");
         let saved_openai = std::env::var("OPENAI_API_KEY").ok();
-        let saved_anthropic = std::env::var("ANTHROPIC_API_KEY").ok();
-        std::env::remove_var("OPENAI_API_KEY");
-        std::env::remove_var("ANTHROPIC_API_KEY");
+        std::env::set_var("OPENAI_API_KEY", "test-openai-key");
         std::env::set_var("HOME", home_root.path());
         std::env::set_var("CTX_PATH", tempdir.path());
-        std::env::set_var("CTX_DISABLE_FASTEMBED", "1");
         DocEnv {
             _tempdir: tempdir,
             _home_root: home_root,
             saved_openai,
-            saved_anthropic,
         }
     }
 
@@ -733,32 +726,32 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn missing_aura_entry_warns_and_fix_removes() {
+    async fn missing_notes_entry_warns_and_fix_removes() {
         let _guard = test_support::env_lock().lock().expect("lock");
         let _env = setup_env();
-        init_context("doc-missing-aura").await.expect("init");
-        let ctx_path = open_existing_context("doc-missing-aura").expect("open");
+        init_context("doc-missing-notes").await.expect("init");
+        let ctx_path = open_existing_context("doc-missing-notes").expect("open");
 
         let mut manifest = Manifest::load(&ctx_path).expect("load");
-        manifest.aura.files.push(crate::artifact::manifest::AuraFile {
-            path: "aura/topics/ghost.md".into(),
+        manifest.notes.files.push(crate::artifact::manifest::NoteFile {
+            path: "notes/topics/ghost.md".into(),
             hash: "sha256:000".into(),
             updated_at: chrono::Utc::now(),
             extra: Default::default(),
         });
         manifest.save(&ctx_path).expect("save");
 
-        let before = run_collect("doc-missing-aura", false).await;
+        let before = run_collect("doc-missing-notes", false).await;
         assert_eq!(
-            report_for(&before, "aura_registry_missing").status,
+            report_for(&before, "notes_registry_missing").status,
             CheckStatus::Warn
         );
 
-        let after = run_collect("doc-missing-aura", true).await;
-        let r = report_for(&after, "aura_registry_missing");
+        let after = run_collect("doc-missing-notes", true).await;
+        let r = report_for(&after, "notes_registry_missing");
         assert!(r.fixes_applied.iter().any(|s| s.contains("ghost")));
         let m = Manifest::load(&ctx_path).expect("reload");
-        assert!(m.aura.files.iter().all(|e| e.path != "aura/topics/ghost.md"));
+        assert!(m.notes.files.iter().all(|e| e.path != "notes/topics/ghost.md"));
     }
 
     #[tokio::test]
@@ -768,24 +761,24 @@ mod tests {
         init_context("doc-stray").await.expect("init");
         let ctx_path = open_existing_context("doc-stray").expect("open");
 
-        // Write a stray root-level topic directly on disk (bypasses canonicalization).
-        let stray = aura_path(&ctx_path).join("stray.md");
+        // Write a root-level note directly on disk (bypasses canonicalization).
+        let stray = notes_path(&ctx_path).join("stray.md");
         std::fs::write(&stray, "unregistered topic").expect("write stray");
 
         let before = run_collect("doc-stray", false).await;
         assert_eq!(
-            report_for(&before, "aura_registry_unregistered").status,
+            report_for(&before, "notes_registry_unregistered").status,
             CheckStatus::Warn
         );
 
         let after = run_collect("doc-stray", true).await;
         assert!(!stray.exists(), "root-level topic should be moved");
         assert!(
-            ctx_path.join("aura/topics/stray.md").exists(),
-            "topic should be relocated under aura/topics/"
+            ctx_path.join("notes/topics/stray.md").exists(),
+            "topic should be relocated under notes/topics/"
         );
-        let r = report_for(&after, "aura_registry_unregistered");
-        assert!(r.fixes_applied.iter().any(|s| s.contains("aura/stray.md -> aura/topics/stray.md")));
+        let r = report_for(&after, "notes_registry_unregistered");
+        assert!(r.fixes_applied.iter().any(|s| s.contains("notes/stray.md -> notes/topics/stray.md")));
     }
 
     #[tokio::test]
@@ -817,11 +810,11 @@ mod tests {
         let _env = setup_env();
         init_context("doc-concurrency").await.expect("init");
         // Seed one topic so registry path has content.
-        write_aura_file(
+        write_notes_file(
             "doc-concurrency",
-            "aura/note.md",
+            "notes/note.md",
             "note",
-            AuraWriteMode::Replace,
+            NotesWriteMode::Replace,
         )
         .expect("write topic");
 
@@ -849,4 +842,3 @@ mod tests {
         assert_eq!(report.reports.len(), 7);
     }
 }
-

@@ -29,12 +29,7 @@ struct ProceduralLlmOutput {
 }
 
 pub async fn extract_procedural(content: &str, source_hint: &str) -> Result<ProceduralExtraction> {
-    if crate::models::llm::should_use_local_llm() {
-        match extract_procedural_with_llm(content).await {
-            Ok(extraction) => return Ok(extraction),
-            Err(error) => warn_local_fallback_once(&error),
-        }
-    } else if crate::models::llm::should_use_cloud_extraction() {
+    if crate::models::llm::should_use_cloud_extraction() {
         match extract_procedural_with_llm(content).await {
             Ok(extraction) => return Ok(extraction),
             Err(error) => warn_cloud_extraction_fallback_once(&error),
@@ -90,15 +85,6 @@ fn parse_procedural_llm_output(raw: &str) -> Result<ProceduralExtraction> {
         context: parsed.context,
         confidence: parsed.confidence.unwrap_or(0.7).clamp(0.0, 1.0),
     })
-}
-
-fn warn_local_fallback_once(error: &anyhow::Error) {
-    static WARNED: OnceLock<()> = OnceLock::new();
-    if WARNED.set(()).is_ok() {
-        eprintln!(
-            "ctx: local llama procedural extraction failed ({error}). falling back to heuristic procedural extraction."
-        );
-    }
 }
 
 fn warn_cloud_extraction_fallback_once(error: &anyhow::Error) {

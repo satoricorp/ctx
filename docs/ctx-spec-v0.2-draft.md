@@ -32,7 +32,7 @@ This specification defines:
 - the artifact directory layout
 - the manifest schema
 - integrity and storage rules
-- the aura layer
+- the notes layer
 - the semantic and procedural index model
 - lifecycle and drift handling
 - an optional registry-backed distribution profile
@@ -67,11 +67,11 @@ A CTX artifact is the portable unit of context state. It is represented on disk 
 
 ### 2.2 Manifest
 
-The manifest is the authoritative metadata document for a CTX artifact. It describes the artifact name, version, timestamps, configuration, source roots, file entries, and aura registry metadata.
+The manifest is the authoritative metadata document for a CTX artifact. It describes the artifact name, version, timestamps, configuration, source roots, file entries, and notes registry metadata.
 
-### 2.3 Aura
+### 2.3 Notes
 
-Aura is the human-readable accumulation layer of the artifact. It is composed of markdown files intended to remain inspectable and editable.
+The notes layer is the human-readable accumulation layer of the artifact. It is composed of markdown files intended to remain inspectable and editable.
 
 ### 2.4 Semantic index
 
@@ -113,7 +113,7 @@ A CTX artifact MUST remain usable without dependence on a hosted service. Remote
 
 ### 3.3 Human-readable accumulation
 
-Aura files MUST remain readable as plain text markdown. The format SHOULD encourage human review and direct editing.
+Notes files MUST remain readable as plain text markdown. The format SHOULD encourage human review and direct editing.
 
 ### 3.4 Content addressing
 
@@ -143,7 +143,7 @@ A conformant artifact MUST contain:
 
 - `manifest.json`
 - `index/`
-- `aura/`
+- `notes/`
 
 ### 4.3 Optional components
 
@@ -166,15 +166,15 @@ The minimum valid CTX artifact MUST include a conforming manifest and the requir
 A conformant artifact MUST contain:
 
 - `manifest.json`
-- `aura/index.md`
-- `aura/aura.md`
+- `notes/index.md`
+- `notes/summary.md`
 
 ### 5.2 Required directories
 
 A conformant artifact MUST contain:
 
 - `index/`
-- `aura/`
+- `notes/`
 
 ### 5.3 Optional directories
 
@@ -202,7 +202,7 @@ The manifest MUST include:
 - `updated_at`
 - `config`
 - `sources`
-- `aura`
+- `notes`
 
 ### 6.3 Version
 
@@ -221,8 +221,8 @@ The manifest MUST include:
 `config` SHOULD include fields such as:
 
 - `store_raw_content`
-- `aura_update_threshold_days`
-- `aura_update_min_topics`
+- `notes_update_threshold_days`
+- `notes_update_min_topics`
 - `embedding_model`
 
 Implementations MAY include additional runtime knobs, but fields not required by the spec SHOULD be treated as implementation details unless explicitly standardized.
@@ -253,9 +253,9 @@ Each file entry MAY include:
 
 `hash_at_index` represents the digest observed when the file was indexed. If current source content later differs, the file is considered drifted.
 
-### 6.9 Aura registry
+### 6.9 Notes registry
 
-The `aura` section of the manifest MUST track aura file entries and their hashes. Each entry SHOULD include:
+The `notes` section of the manifest MUST track notes file entries and their hashes. Each entry SHOULD include:
 
 - `path`
 - `hash`
@@ -299,37 +299,37 @@ If current source content differs from `hash_at_index`, the file MUST be conside
 
 Implementations SHOULD surface drift explicitly in status or inspection output.
 
-## 8. Aura layer
+## 8. Notes layer
 
 ### 8.1 Purpose
 
-Aura MUST serve as the human-readable accumulation layer for agent context.
+Notes MUST serve as the human-readable accumulation layer for agent context.
 
-### 8.2 `aura/index.md`
+### 8.2 `notes/index.md`
 
-`aura/index.md` MUST act as the hub file linking topic files and summarizing the artifact at a glance.
+`notes/index.md` MUST act as the hub file linking topic files and summarizing the artifact at a glance.
 
-### 8.3 `aura/aura.md`
+### 8.3 `notes/summary.md`
 
-`aura/aura.md` MUST represent stable or promoted knowledge that should persist across sessions.
+`notes/summary.md` MUST represent stable or promoted knowledge that should persist across sessions.
 
 ### 8.4 Topic files
 
-Topic files MAY be added to capture domain-specific, project-specific, or session-specific context. Topic files SHOULD live under `aura/topics/` so that only `aura/aura.md` and `aura/index.md` remain at the aura root.
+Topic files MAY be added to capture domain-specific, project-specific, or session-specific context. Topic files SHOULD live under `notes/topics/` so that only `notes/summary.md` and `notes/index.md` remain at the notes root.
 
 ### 8.5 Editability
 
-Humans SHOULD be allowed to edit aura files directly. The format SHOULD not require machine-only tooling for comprehension or maintenance.
+Humans SHOULD be allowed to edit notes files directly. The format SHOULD not require machine-only tooling for comprehension or maintenance.
 
 ### 8.6 Ownership
 
-Aura registry entries SHOULD track the latest known editor or owner when such information is available.
+Notes registry entries SHOULD track the latest known editor or owner when such information is available.
 
-### 8.7 Aura update
+### 8.7 Notes update
 
-Implementations MAY define an aura update process that distills repeated stable information from topic files into a managed section of `aura.md`.
+Implementations MAY define a notes update process that distills repeated stable information from topic files into a managed section of `summary.md`.
 
-The aura update SHOULD preserve source history and SHOULD avoid destructive loss of useful provenance unless the implementation explicitly documents that behavior.
+The notes update SHOULD preserve source history and SHOULD avoid destructive loss of useful provenance unless the implementation explicitly documents that behavior.
 
 ## 9. Index model
 
@@ -371,7 +371,7 @@ verbose mode.
 
 An implementation SHOULD provide a way to inspect drift and artifact health without mutating state.
 
-An implementation MAY additionally provide a deeper health check (e.g. `ctx doctor`) that verifies blob integrity, aura registry consistency, and index presence. Such a command SHOULD run its checks concurrently, stream results fast-first so the operator receives immediate feedback, and offer a non-destructive repair mode that MAY include pruning orphan blobs, relocating stray aura topic files into `aura/topics/`, resyncing the aura registry, and rebuilding the index in place. Source files MUST NOT be deleted by a repair operation.
+An implementation MAY additionally provide a deeper health check (e.g. `ctx doctor`) that verifies blob integrity, notes registry consistency, and index presence. Such a command SHOULD run its checks concurrently, stream results fast-first so the operator receives immediate feedback, and offer a non-destructive repair mode that MAY include pruning orphan blobs, relocating stray notes topic files into `notes/topics/`, resyncing the notes registry, and rebuilding the index in place. Source files MUST NOT be deleted by a repair operation.
 
 Implementation note (non-normative): when a deep health command is provided, a machine-readable output mode (for example JSON) improves automation and agent interoperability.
 
@@ -383,9 +383,9 @@ An implementation SHOULD provide a way to retrieve semantic and procedural conte
 
 An implementation SHOULD provide a way to add structured procedural records.
 
-### 10.6 Aura update cycle
+### 10.6 Notes update cycle
 
-If implemented, the aura update MUST preserve source history and SHOULD update `aura.md` rather than duplicating stabilized knowledge across many files.
+If implemented, the notes update MUST preserve source history and SHOULD update `summary.md` rather than duplicating stabilized knowledge across many files.
 
 ### 10.7 Drift handling
 
@@ -470,9 +470,9 @@ A conformant implementation SHOULD define the smallest valid artifact it can rea
 
 If raw content is present, implementations SHOULD verify digests when reading.
 
-### 13.2 Sensitive aura content
+### 13.2 Sensitive notes content
 
-Aura MAY contain sensitive information and SHOULD be protected accordingly.
+Notes MAY contain sensitive information and SHOULD be protected accordingly.
 
 ### 13.3 Source path exposure
 
@@ -520,9 +520,9 @@ example.ctx/
   index/
     semantic/
     procedural/
-  aura/
+  notes/
     index.md
-    aura.md
+    summary.md
     topics/
       architecture.md
       decisions.md
@@ -541,16 +541,16 @@ example.ctx/
   "updated_at": "2026-04-16T00:00:00Z",
   "config": {
     "store_raw_content": false,
-    "aura_update_threshold_days": 7,
-    "aura_update_min_topics": 3,
-    "embedding_model": "fastembed:all-MiniLM-L6-v2"
+    "notes_update_threshold_days": 7,
+    "notes_update_min_topics": 3,
+    "embedding_model": "openai:text-embedding-3-small"
   },
   "sources": [],
-  "aura": {
+  "notes": {
     "files": [
-      { "path": "aura/index.md", "hash": "sha256:...", "updated_at": "2026-04-16T00:00:00Z" },
-      { "path": "aura/aura.md", "hash": "sha256:...", "updated_at": "2026-04-16T00:00:00Z" },
-      { "path": "aura/topics/auth.md", "hash": "sha256:...", "updated_at": "2026-04-16T00:00:00Z" }
+      { "path": "notes/index.md", "hash": "sha256:...", "updated_at": "2026-04-16T00:00:00Z" },
+      { "path": "notes/summary.md", "hash": "sha256:...", "updated_at": "2026-04-16T00:00:00Z" },
+      { "path": "notes/topics/auth.md", "hash": "sha256:...", "updated_at": "2026-04-16T00:00:00Z" }
     ]
   }
 }
@@ -560,5 +560,5 @@ example.ctx/
 
 - This draft is intentionally compatible with the current CTX architecture while leaving room for future registry and sync work.
 - The current reference implementation exposes a CLI, HTTP API, and MCP server, but the artifact spec MUST remain independent of those surfaces.
-- The current codebase already models manifest metadata, source entries, aura registry entries, semantic and procedural indexes, and drift-sensitive updates.
+- The current codebase already models manifest metadata, source entries, notes registry entries, semantic and procedural indexes, and drift-sensitive updates.
 - Publish and pull are treated here as a separate profile because they are not yet implemented in the reference CLI.

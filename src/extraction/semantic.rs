@@ -36,12 +36,7 @@ struct SemanticLlmOutput {
 }
 
 pub async fn extract_semantic(content: &str, source_hint: &str) -> Result<SemanticExtraction> {
-    if crate::models::llm::should_use_local_llm() {
-        match extract_semantic_with_llm(content, source_hint).await {
-            Ok(extraction) => return Ok(extraction),
-            Err(error) => warn_local_fallback_once(&error),
-        }
-    } else if crate::models::llm::should_use_cloud_extraction() {
+    if crate::models::llm::should_use_cloud_extraction() {
         match extract_semantic_with_llm(content, source_hint).await {
             Ok(extraction) => return Ok(extraction),
             Err(error) => warn_cloud_extraction_fallback_once(&error),
@@ -160,15 +155,6 @@ fn semantic_llm_output_from_value(v: Value, depth: u8) -> Result<SemanticLlmOutp
         _ => Err(anyhow!(
             "expected a JSON object for semantic extraction (got non-object JSON)"
         )),
-    }
-}
-
-fn warn_local_fallback_once(error: &anyhow::Error) {
-    static WARNED: OnceLock<()> = OnceLock::new();
-    if WARNED.set(()).is_ok() {
-        eprintln!(
-            "ctx: local llama extraction failed ({error}). falling back to heuristic semantic extraction."
-        );
     }
 }
 

@@ -5,7 +5,7 @@ FROM rust:1.88-trixie AS build
 
 WORKDIR /app
 
-# Native deps: bindgen needs libclang; llama-cpp-sys runs cmake + optional rustfmt on generated code.
+# Native deps for the current Rust workspace build.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         clang \

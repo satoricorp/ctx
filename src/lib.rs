@@ -1,6 +1,6 @@
 pub mod api;
 pub mod artifact;
-pub mod aura_update;
+pub mod notes_update;
 pub mod auth;
 pub mod cli;
 pub mod doctor;
@@ -31,12 +31,14 @@ use std::time::UNIX_EPOCH;
 use walkdir::WalkDir;
 
 use artifact::{
-    aura_path, blobs_path, context_path, context_root, index_path, manifest_path, Manifest,
+    blobs_path, context_path, context_root, index_path, manifest_path, notes_path, Manifest,
     ManifestEntry,
 };
 use index::procedural::{ingest_procedural_document, record_procedure_structured};
 use index::semantic::ingest_semantic_document;
-use install::{ensure_base_dirs, load_config, save_config, set_default_context_if_unset};
+use install::{
+    ensure_base_dirs, ensure_local_setup, load_config, save_config, set_default_context_if_unset,
+};
 use store::get_or_open_env;
 use store::schema::{
     AddOutcome, ContextListing, ContextStatus, IngestionSummary, RecordProcedureInput,
@@ -45,6 +47,7 @@ use store::schema::{
 const BOOTSTRAP_FILES: &[&str] = &["AGENTS.md", "CLAUDE.md", "CONTEXT.md"];
 
 pub async fn init_context(name: &str) -> Result<ContextStatus> {
+    ensure_local_setup()?;
     prepare_context_layout(name)?;
     bootstrap_procedural(name).await?;
     context_status(name)
@@ -58,7 +61,8 @@ fn prepare_context_layout(name: &str) -> Result<PathBuf> {
     let ctx_path = context_path(name);
     fs::create_dir_all(blobs_path(&ctx_path))?;
     fs::create_dir_all(index_path(&ctx_path))?;
-    seed_aura_files(&ctx_path)?;
+    migrate_legacy_notes_dir(&ctx_path)?;
+    seed_notes_files(&ctx_path)?;
 
     let mut manifest = if manifest_path(&ctx_path).exists() {
         Manifest::load(&ctx_path)?
@@ -67,7 +71,7 @@ fn prepare_context_layout(name: &str) -> Result<PathBuf> {
     };
     manifest.name = name.to_string();
     sync_manifest_config(&mut manifest)?;
-    refresh_aura_registry(&ctx_path, &mut manifest)?;
+    refresh_notes_registry(&ctx_path, &mut manifest)?;
     manifest.save(&ctx_path)?;
 
     get_or_open_env(&index_path(&ctx_path))?;
@@ -75,25 +79,55 @@ fn prepare_context_layout(name: &str) -> Result<PathBuf> {
     Ok(ctx_path)
 }
 
-const AURA_INDEX_SEED: &str = "# Aura Index\n\nAgent-maintained hub for the aura directory. \
+const NOTES_INDEX_SEED: &str = "# Notes Index\n\nAgent-maintained hub for the notes directory. \
 Topic files appear below with one-line summaries.\n\n<!-- topics will be added here -->\n";
 
-const AURA_MAIN_SEED: &str = "# Aura\n\nLong-term promoted memory for this context. \
-Entries here are distilled from topic files via the promotion cycle.\n\n\
+const NOTES_SUMMARY_SEED: &str = "# Notes Summary\n\nLong-term project notes for this context. \
+Entries here are distilled from stable topic notes during the update cycle.\n\n\
 <!-- entries will appear here -->\n";
 
-/// Creates the aura directory and seeds index.md and aura.md only if they don't already exist.
-fn seed_aura_files(ctx_path: &Path) -> Result<()> {
-    let dir = aura_path(ctx_path);
+/// Creates the notes directory and seeds index.md and summary.md only if they don't already exist.
+fn seed_notes_files(ctx_path: &Path) -> Result<()> {
+    let dir = notes_path(ctx_path);
     fs::create_dir_all(&dir)?;
     let index = dir.join("index.md");
     if !index.exists() {
-        fs::write(&index, AURA_INDEX_SEED)?;
+        fs::write(&index, NOTES_INDEX_SEED)?;
     }
-    let aura = dir.join("aura.md");
-    if !aura.exists() {
-        fs::write(&aura, AURA_MAIN_SEED)?;
+    let summary = dir.join("summary.md");
+    if !summary.exists() {
+        fs::write(&summary, NOTES_SUMMARY_SEED)?;
     }
+    Ok(())
+}
+
+fn migrate_legacy_notes_dir(ctx_path: &Path) -> Result<()> {
+    let notes_dir = notes_path(ctx_path);
+    if !notes_dir.exists() {
+        let legacy_dir = ctx_path.join("aura");
+        if legacy_dir.exists() {
+            fs::rename(&legacy_dir, &notes_dir).with_context(|| {
+                format!(
+                    "rename legacy notes directory {} -> {}",
+                    legacy_dir.display(),
+                    notes_dir.display()
+                )
+            })?;
+        }
+    }
+
+    let legacy_summary = notes_dir.join("aura.md");
+    let summary = notes_dir.join("summary.md");
+    if legacy_summary.exists() && !summary.exists() {
+        fs::rename(&legacy_summary, &summary).with_context(|| {
+            format!(
+                "rename legacy notes summary {} -> {}",
+                legacy_summary.display(),
+                summary.display()
+            )
+        })?;
+    }
+
     Ok(())
 }
 
@@ -272,14 +306,14 @@ pub async fn run_ingest_work_items(
     Ok(summary)
 }
 
-/// Aura registry refresh + optional aura distill + status (end of `ctx update`).
+/// Notes registry refresh + optional notes distill + status (end of `ctx update`).
 pub async fn finalize_update_context(context: &str, ctx_path: &Path) -> Result<ContextStatus> {
     let mut manifest = Manifest::load(ctx_path)?;
-    refresh_aura_registry(ctx_path, &mut manifest)?;
+    refresh_notes_registry(ctx_path, &mut manifest)?;
     manifest.save(ctx_path)?;
 
-    if let Err(err) = aura_update::update_aura(ctx_path).await {
-        eprintln!("aura update skipped: {err:#}");
+    if let Err(err) = notes_update::update_notes(ctx_path).await {
+        eprintln!("notes update skipped: {err:#}");
     }
 
     context_status(context)
@@ -1308,65 +1342,66 @@ pub fn verify_context(name: &str) -> Result<VerifyReport> {
     })
 }
 
-// -------------------------------- aura --------------------------------
+// -------------------------------- notes --------------------------------
 
-/// Read-only snapshot of aura content for inclusion in query responses.
+/// Read-only snapshot of notes content for inclusion in query responses.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct AuraSummary {
+pub struct NotesSummary {
     pub index: Option<String>,
-    pub aura: Option<String>,
+    pub summary: Option<String>,
     pub topics: Vec<String>,
 }
 
-/// A single aura file read off disk, paired with its current hash.
+/// A single notes file read off disk, paired with its current hash.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct AuraContent {
+pub struct NotesContent {
     pub path: String,
     pub content: String,
     pub hash: String,
 }
 
-/// Write modes for `write_aura_file`.
+/// Write modes for `write_notes_file`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AuraWriteMode {
+pub enum NotesWriteMode {
     Replace,
     Append,
 }
 
-impl AuraWriteMode {
+impl NotesWriteMode {
     pub fn parse(value: Option<&str>) -> Result<Self> {
         match value.unwrap_or("replace") {
             "replace" => Ok(Self::Replace),
             "append" => Ok(Self::Append),
-            other => bail!("unknown aura write mode {}", other),
+            other => bail!("unknown notes write mode {}", other),
         }
     }
 }
 
-/// Outcome of a successful aura writeback.
+/// Outcome of a successful notes writeback.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct AuraWriteOutcome {
+pub struct NotesWriteOutcome {
     pub path: String,
     pub hash: String,
 }
 
-/// Rescans `aura/` and rebuilds the manifest's aura registry. `updated_at` is preserved
+/// Rescans `notes/` and rebuilds the manifest's notes registry. `updated_at` is preserved
 /// for entries whose hash did not change; new or changed entries are stamped with `now`.
-pub fn refresh_aura_registry(ctx_path: &Path, manifest: &mut Manifest) -> Result<()> {
-    let dir = aura_path(ctx_path);
+pub fn refresh_notes_registry(ctx_path: &Path, manifest: &mut Manifest) -> Result<()> {
+    migrate_legacy_notes_dir(ctx_path)?;
+    let dir = notes_path(ctx_path);
     if !dir.exists() {
-        manifest.aura.files.clear();
+        manifest.notes.files.clear();
         return Ok(());
     }
 
-    let existing: std::collections::HashMap<String, artifact::manifest::AuraFile> = manifest
-        .aura
+    let existing: std::collections::HashMap<String, artifact::manifest::NoteFile> = manifest
+        .notes
         .files
         .drain(..)
         .map(|entry| (entry.path.clone(), entry))
         .collect();
 
-    let mut refreshed: Vec<artifact::manifest::AuraFile> = Vec::new();
+    let mut refreshed: Vec<artifact::manifest::NoteFile> = Vec::new();
     for entry in WalkDir::new(&dir)
         .min_depth(1)
         .into_iter()
@@ -1383,13 +1418,13 @@ pub fn refresh_aura_registry(ctx_path: &Path, manifest: &mut Manifest) -> Result
         let rel_str = rel
             .to_string_lossy()
             .replace(std::path::MAIN_SEPARATOR, "/");
-        let bytes = fs::read(abs).with_context(|| format!("read aura file {}", abs.display()))?;
+        let bytes = fs::read(abs).with_context(|| format!("read notes file {}", abs.display()))?;
         let hash = hash_bytes(&bytes);
         let updated_at = match existing.get(&rel_str) {
             Some(prev) if prev.hash == hash => prev.updated_at,
             _ => Utc::now(),
         };
-        refreshed.push(artifact::manifest::AuraFile {
+        refreshed.push(artifact::manifest::NoteFile {
             path: rel_str,
             hash,
             updated_at,
@@ -1398,13 +1433,14 @@ pub fn refresh_aura_registry(ctx_path: &Path, manifest: &mut Manifest) -> Result
     }
 
     refreshed.sort_by(|a, b| a.path.cmp(&b.path));
-    manifest.aura.files = refreshed;
+    manifest.notes.files = refreshed;
     Ok(())
 }
 
-/// Reads index.md (first) and aura.md (second), plus the list of other aura/*.md paths.
-pub fn read_aura_summary(ctx_path: &Path) -> Result<AuraSummary> {
-    let dir = aura_path(ctx_path);
+/// Reads index.md (first) and summary.md (second), plus the list of other notes/*.md paths.
+pub fn read_notes_summary(ctx_path: &Path) -> Result<NotesSummary> {
+    migrate_legacy_notes_dir(ctx_path)?;
+    let dir = notes_path(ctx_path);
     let read_opt = |name: &str| -> Result<Option<String>> {
         let path = dir.join(name);
         if !path.exists() {
@@ -1415,7 +1451,7 @@ pub fn read_aura_summary(ctx_path: &Path) -> Result<AuraSummary> {
         ))
     };
     let index = read_opt("index.md")?;
-    let aura = read_opt("aura.md")?;
+    let summary = read_opt("summary.md")?;
 
     let mut topics: Vec<String> = Vec::new();
     if dir.exists() {
@@ -1432,7 +1468,7 @@ pub fn read_aura_summary(ctx_path: &Path) -> Result<AuraSummary> {
                 continue;
             }
             let name = abs.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            if name == "index.md" || name == "aura.md" {
+            if name == "index.md" || name == "summary.md" {
                 continue;
             }
             let rel = abs.strip_prefix(ctx_path).unwrap_or(abs);
@@ -1444,52 +1480,52 @@ pub fn read_aura_summary(ctx_path: &Path) -> Result<AuraSummary> {
     }
     topics.sort();
 
-    Ok(AuraSummary {
+    Ok(NotesSummary {
         index,
-        aura,
+        summary,
         topics,
     })
 }
 
-/// Reads a single aura file. `rel_path` must start with `aura/` and must resolve inside
-/// the artifact's aura directory.
-pub fn read_aura_file(ctx_path: &Path, rel_path: &str) -> Result<AuraContent> {
-    let canonical = canonical_aura_path(rel_path);
-    let abs = resolve_aura_path(ctx_path, &canonical)?;
+/// Reads a single notes file. `rel_path` must start with `notes/` and must resolve inside
+/// the artifact's notes directory.
+pub fn read_notes_file(ctx_path: &Path, rel_path: &str) -> Result<NotesContent> {
+    let canonical = canonical_notes_path(rel_path);
+    let abs = resolve_notes_path(ctx_path, &canonical)?;
     if !abs.exists() {
-        bail!("aura file {} does not exist", canonical);
+        bail!("notes file {} does not exist", canonical);
     }
     let bytes = fs::read(&abs).with_context(|| format!("read {}", abs.display()))?;
     let hash = hash_bytes(&bytes);
     let content = String::from_utf8(bytes)
-        .with_context(|| format!("aura file {} is not valid utf-8", canonical))?;
-    Ok(AuraContent {
+        .with_context(|| format!("notes file {} is not valid utf-8", canonical))?;
+    Ok(NotesContent {
         path: canonical,
         content,
         hash,
     })
 }
 
-/// Writes (or appends to) an aura file and updates the manifest registry entry.
-pub fn write_aura_file(
+/// Writes (or appends to) a notes file and updates the manifest registry entry.
+pub fn write_notes_file(
     context: &str,
     rel_path: &str,
     content: &str,
-    mode: AuraWriteMode,
-) -> Result<AuraWriteOutcome> {
+    mode: NotesWriteMode,
+) -> Result<NotesWriteOutcome> {
     let ctx_path = open_existing_context(context)?;
-    let canonical = canonical_aura_path(rel_path);
-    let abs = resolve_aura_path(&ctx_path, &canonical)?;
+    let canonical = canonical_notes_path(rel_path);
+    let abs = resolve_notes_path(&ctx_path, &canonical)?;
 
     if let Some(parent) = abs.parent() {
         fs::create_dir_all(parent)?;
     }
 
     match mode {
-        AuraWriteMode::Replace => {
+        NotesWriteMode::Replace => {
             fs::write(&abs, content).with_context(|| format!("write {}", abs.display()))?;
         }
-        AuraWriteMode::Append => {
+        NotesWriteMode::Append => {
             let mut buffer = if abs.exists() {
                 fs::read(&abs).with_context(|| format!("read {}", abs.display()))?
             } else {
@@ -1507,67 +1543,346 @@ pub fn write_aura_file(
     let hash = hash_bytes(&bytes);
 
     let mut manifest = Manifest::load(&ctx_path)?;
-    manifest.upsert_aura(&canonical, &hash);
+    manifest.upsert_note(&canonical, &hash);
     manifest.save(&ctx_path)?;
 
-    Ok(AuraWriteOutcome {
+    Ok(NotesWriteOutcome {
         path: canonical,
         hash,
     })
 }
 
-/// Resolves `rel_path` to an absolute path inside `ctx_path/aura/`, rejecting any attempt
-/// to escape the aura directory.
-fn resolve_aura_path(ctx_path: &Path, rel_path: &str) -> Result<PathBuf> {
-    let normalized = normalize_aura_path(rel_path);
-    if !normalized.starts_with("aura/") {
-        bail!("aura path must begin with \"aura/\"");
+/// Resolves `rel_path` to an absolute path inside `ctx_path/notes/`, rejecting any attempt
+/// to escape the notes directory.
+fn resolve_notes_path(ctx_path: &Path, rel_path: &str) -> Result<PathBuf> {
+    let normalized = normalize_notes_path(rel_path);
+    if !normalized.starts_with("notes/") {
+        bail!("notes path must begin with \"notes/\"");
     }
     if normalized.split('/').any(|segment| segment == "..") {
-        bail!("aura path must not contain \"..\" segments");
+        bail!("notes path must not contain \"..\" segments");
     }
     let abs = ctx_path.join(&normalized);
-    let aura_root = aura_path(ctx_path);
-    let check_base = aura_root.canonicalize().unwrap_or(aura_root.clone());
+    let notes_root = notes_path(ctx_path);
+    let check_base = notes_root.canonicalize().unwrap_or(notes_root.clone());
     // Walk up until we find an existing ancestor we can canonicalize; this lets us
-    // validate paths whose leaf directory has not been created yet (e.g. aura/topics/).
+    // validate paths whose leaf directory has not been created yet (e.g. notes/topics/).
     let check_target = abs
         .ancestors()
         .find_map(|anc| anc.canonicalize().ok())
         .unwrap_or_else(|| abs.clone());
     if !check_target.starts_with(&check_base) {
-        bail!("aura path {} escapes the aura directory", rel_path);
+        bail!("notes path {} escapes the notes directory", rel_path);
     }
     Ok(abs)
 }
 
-fn normalize_aura_path(rel_path: &str) -> String {
+fn normalize_notes_path(rel_path: &str) -> String {
     rel_path.replace('\\', "/")
 }
 
-/// Canonicalizes an aura-relative path so root-level topic writes land under
-/// `aura/topics/`. Reserved files (`aura/aura.md`, `aura/index.md`) and paths
+/// Canonicalizes a notes-relative path so root-level topic writes land under
+/// `notes/topics/`. Reserved files (`notes/summary.md`, `notes/index.md`) and paths
 /// that already include a subdirectory are returned unchanged.
-pub(crate) fn canonical_aura_path(rel_path: &str) -> String {
-    let normalized = normalize_aura_path(rel_path);
+pub(crate) fn canonical_notes_path(rel_path: &str) -> String {
+    let normalized = normalize_notes_path(rel_path);
+    let normalized = normalized.replacen("aura/", "notes/", 1);
     let segments: Vec<&str> = normalized.split('/').collect();
-    if segments.len() != 2 || segments[0] != "aura" {
+    if segments.len() != 2 || segments[0] != "notes" {
         return normalized;
     }
     let name = segments[1];
-    if name == "aura.md" || name == "index.md" {
+    if name == "aura.md" {
+        return String::from("notes/summary.md");
+    }
+    if name == "summary.md" || name == "index.md" {
         return normalized;
     }
-    format!("aura/topics/{name}")
+    format!("notes/topics/{name}")
 }
 
 #[cfg(test)]
 pub(crate) mod test_support {
-    use std::sync::{Mutex, OnceLock};
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex, OnceLock};
+    use std::thread;
+    use std::time::Duration;
 
     pub(crate) fn env_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    pub(crate) struct MockOpenAiServer {
+        base_url: String,
+        shutdown: Arc<AtomicBool>,
+        handle: Option<thread::JoinHandle<()>>,
+    }
+
+    impl MockOpenAiServer {
+        pub(crate) fn start() -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock openai");
+            listener
+                .set_nonblocking(true)
+                .expect("mock openai nonblocking");
+            let addr = listener.local_addr().expect("mock openai addr");
+            let shutdown = Arc::new(AtomicBool::new(false));
+            let shutdown_flag = shutdown.clone();
+            let handle = thread::spawn(move || {
+                while !shutdown_flag.load(Ordering::Relaxed) {
+                    match listener.accept() {
+                        Ok((stream, _)) => handle_mock_openai_connection(stream),
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            thread::sleep(Duration::from_millis(10));
+                        }
+                        Err(_) => break,
+                    }
+                }
+            });
+
+            Self {
+                base_url: format!("http://{addr}/v1"),
+                shutdown,
+                handle: Some(handle),
+            }
+        }
+
+        pub(crate) fn base_url(&self) -> &str {
+            &self.base_url
+        }
+    }
+
+    impl Drop for MockOpenAiServer {
+        fn drop(&mut self) {
+            self.shutdown.store(true, Ordering::Relaxed);
+            let _ = TcpStream::connect(
+                self.base_url
+                    .trim_start_matches("http://")
+                    .trim_end_matches("/v1"),
+            );
+            if let Some(handle) = self.handle.take() {
+                let _ = handle.join();
+            }
+        }
+    }
+
+    fn handle_mock_openai_connection(mut stream: TcpStream) {
+        let mut buffer = Vec::new();
+        let mut chunk = [0u8; 4096];
+        let mut header_end = None;
+        loop {
+            match stream.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(n) => {
+                    buffer.extend_from_slice(&chunk[..n]);
+                    if let Some(pos) = find_header_end(&buffer) {
+                        header_end = Some(pos);
+                        break;
+                    }
+                }
+                Err(_) => return,
+            }
+        }
+
+        let Some(header_end) = header_end else {
+            return;
+        };
+        let headers = String::from_utf8_lossy(&buffer[..header_end]).into_owned();
+        let content_length = headers
+            .lines()
+            .find_map(|line| {
+                line.split_once(':').and_then(|(name, value)| {
+                    if name.eq_ignore_ascii_case("content-length") {
+                        value.trim().parse::<usize>().ok()
+                    } else {
+                        None
+                    }
+                })
+            })
+            .unwrap_or(0);
+
+        let body_start = header_end + 4;
+        while buffer.len().saturating_sub(body_start) < content_length {
+            match stream.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(n) => buffer.extend_from_slice(&chunk[..n]),
+                Err(_) => return,
+            }
+        }
+
+        let request_line = headers.lines().next().unwrap_or_default();
+        let path = request_line
+            .split_whitespace()
+            .nth(1)
+            .unwrap_or_default()
+            .to_string();
+        let body = String::from_utf8_lossy(&buffer[body_start..]).to_string();
+        let response = mock_openai_response(&path, &body);
+        let _ = stream.write_all(response.as_bytes());
+        let _ = stream.flush();
+    }
+
+    fn find_header_end(buffer: &[u8]) -> Option<usize> {
+        buffer.windows(4).position(|window| window == b"\r\n\r\n")
+    }
+
+    fn mock_openai_response(path: &str, body: &str) -> String {
+        let value = if path.ends_with("/chat/completions") {
+            mock_chat_completion(body)
+        } else if path.ends_with("/embeddings") {
+            mock_embeddings(body)
+        } else {
+            serde_json::json!({ "error": "not found" })
+        };
+
+        let status = if path.ends_with("/chat/completions") || path.ends_with("/embeddings") {
+            "HTTP/1.1 200 OK"
+        } else {
+            "HTTP/1.1 404 Not Found"
+        };
+        let body = value.to_string();
+        format!(
+            "{status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        )
+    }
+
+    fn mock_chat_completion(body: &str) -> serde_json::Value {
+        let request: serde_json::Value =
+            serde_json::from_str(body).expect("mock openai chat request json");
+        let prompt = request["messages"][0]["content"].as_str().unwrap_or_default();
+        let content = if prompt.contains("\"task_description\"") {
+            mock_procedural_json(prompt)
+        } else {
+            mock_semantic_json(prompt)
+        };
+
+        serde_json::json!({
+            "choices": [{
+                "message": {
+                    "content": content
+                }
+            }]
+        })
+    }
+
+    fn mock_embeddings(body: &str) -> serde_json::Value {
+        let request: serde_json::Value =
+            serde_json::from_str(body).expect("mock openai embeddings request json");
+        let inputs = request["input"].as_array().cloned().unwrap_or_default();
+        let data: Vec<serde_json::Value> = inputs
+            .iter()
+            .enumerate()
+            .map(|(index, value)| {
+                let text = value.as_str().unwrap_or_default();
+                serde_json::json!({
+                    "index": index,
+                    "embedding": mock_embedding(text),
+                })
+            })
+            .collect();
+        serde_json::json!({ "data": data })
+    }
+
+    fn mock_semantic_json(prompt: &str) -> String {
+        let content = prompt.rsplit("\ncontent:\n").next().unwrap_or(prompt).trim();
+        let summary = content
+            .lines()
+            .next()
+            .unwrap_or(content)
+            .trim()
+            .to_string();
+        let entities: Vec<String> = content
+            .split(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_')
+            .filter(|term| {
+                term.len() > 2
+                    && term
+                        .chars()
+                        .next()
+                        .map(|ch| ch.is_ascii_uppercase())
+                        .unwrap_or(false)
+            })
+            .map(str::to_string)
+            .collect();
+        let triples = if content.contains(" uses ") {
+            vec![serde_json::json!(["AuthService", "uses", "RS256"])]
+        } else {
+            Vec::new()
+        };
+
+        serde_json::json!({
+            "summary": summary,
+            "facts": [content],
+            "entities": entities,
+            "triples": triples,
+        })
+        .to_string()
+    }
+
+    fn mock_procedural_json(prompt: &str) -> String {
+        let content = prompt.rsplit("\ncontent:\n").next().unwrap_or(prompt).trim();
+        let steps: Vec<String> = content
+            .lines()
+            .filter_map(|line| {
+                let trimmed = line.trim();
+                let digits = trimmed.chars().take_while(|ch| ch.is_ascii_digit()).count();
+                if digits == 0 {
+                    return None;
+                }
+                let rest = trimmed[digits..].trim_start_matches('.').trim();
+                if rest.is_empty() {
+                    None
+                } else {
+                    Some(rest.to_string())
+                }
+            })
+            .collect();
+        let outcome = if content.to_ascii_lowercase().contains("success") {
+            "success"
+        } else {
+            "partial"
+        };
+
+        serde_json::json!({
+            "task_description": content.lines().next().unwrap_or("procedure"),
+            "steps": steps,
+            "outcome": outcome,
+            "failure_modes": [],
+            "context": { "language": null, "framework": null, "environment": null },
+            "confidence": 0.9,
+        })
+        .to_string()
+    }
+
+    fn mock_embedding(text: &str) -> Vec<f32> {
+        let dims = 32usize;
+        let mut vector = vec![0.0_f32; dims];
+        for token in text
+            .split(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_')
+            .map(|token| token.trim().to_ascii_lowercase())
+            .filter(|token| !token.is_empty())
+        {
+            let mut hash = 1469598103934665603u64;
+            for byte in token.as_bytes() {
+                hash ^= *byte as u64;
+                hash = hash.wrapping_mul(1099511628211);
+            }
+            let index = (hash as usize) % dims;
+            let sign = if (hash >> 8) & 1 == 0 { 1.0 } else { -1.0 };
+            vector[index] += sign;
+        }
+
+        let norm = vector.iter().map(|value| value * value).sum::<f32>().sqrt();
+        if norm > 0.0 {
+            for value in &mut vector {
+                *value /= norm;
+            }
+        }
+
+        vector
     }
 }
 
@@ -1789,15 +2104,15 @@ mod tests {
             .expect("test lock poisoned");
         let tempdir = TempDir::new().expect("tempdir");
         let home_root = TempDir::new().expect("home root");
+        let server = crate::test_support::MockOpenAiServer::start();
 
         let saved_openai = std::env::var("OPENAI_API_KEY").ok();
-        let saved_anthropic = std::env::var("ANTHROPIC_API_KEY").ok();
-        std::env::remove_var("OPENAI_API_KEY");
-        std::env::remove_var("ANTHROPIC_API_KEY");
+        let saved_openai_base = std::env::var("CTX_OPENAI_BASE_URL").ok();
 
         std::env::set_var("HOME", home_root.path());
         std::env::set_var("CTX_PATH", tempdir.path());
-        std::env::set_var("CTX_DISABLE_FASTEMBED", "1");
+        std::env::set_var("OPENAI_API_KEY", "test-openai-key");
+        std::env::set_var("CTX_OPENAI_BASE_URL", server.base_url());
 
         init_context("test-inline").await.expect("init context");
         add_content_to_context(
@@ -1818,11 +2133,10 @@ mod tests {
             .iter()
             .any(|result| result.summary.contains("AuthService")));
 
-        std::env::remove_var("CTX_DISABLE_FASTEMBED");
         std::env::remove_var("CTX_PATH");
         std::env::remove_var("HOME");
         restore_optional_env("OPENAI_API_KEY", saved_openai.as_deref());
-        restore_optional_env("ANTHROPIC_API_KEY", saved_anthropic.as_deref());
+        restore_optional_env("CTX_OPENAI_BASE_URL", saved_openai_base.as_deref());
     }
 
     #[tokio::test]
@@ -1832,15 +2146,15 @@ mod tests {
             .expect("test lock poisoned");
         let tempdir = TempDir::new().expect("tempdir");
         let home_root = TempDir::new().expect("home root");
+        let server = crate::test_support::MockOpenAiServer::start();
 
         let saved_openai = std::env::var("OPENAI_API_KEY").ok();
-        let saved_anthropic = std::env::var("ANTHROPIC_API_KEY").ok();
-        std::env::remove_var("OPENAI_API_KEY");
-        std::env::remove_var("ANTHROPIC_API_KEY");
+        let saved_openai_base = std::env::var("CTX_OPENAI_BASE_URL").ok();
 
         std::env::set_var("HOME", home_root.path());
         std::env::set_var("CTX_PATH", tempdir.path());
-        std::env::set_var("CTX_DISABLE_FASTEMBED", "1");
+        std::env::set_var("OPENAI_API_KEY", "test-openai-key");
+        std::env::set_var("CTX_OPENAI_BASE_URL", server.base_url());
 
         init_context("test-procedural").await.expect("init context");
         add_content_to_context(
@@ -1866,11 +2180,10 @@ mod tests {
             result.content.contains("deploy") || result.summary.to_lowercase().contains("staging")
         }));
 
-        std::env::remove_var("CTX_DISABLE_FASTEMBED");
         std::env::remove_var("CTX_PATH");
         std::env::remove_var("HOME");
         restore_optional_env("OPENAI_API_KEY", saved_openai.as_deref());
-        restore_optional_env("ANTHROPIC_API_KEY", saved_anthropic.as_deref());
+        restore_optional_env("CTX_OPENAI_BASE_URL", saved_openai_base.as_deref());
     }
 
     fn restore_optional_env(key: &str, value: Option<&str>) {
@@ -1880,145 +2193,171 @@ mod tests {
         }
     }
 
-    struct AuraTestEnv {
+    struct NotesTestEnv {
         _tempdir: TempDir,
         _home_root: TempDir,
+        _server: crate::test_support::MockOpenAiServer,
         saved_openai: Option<String>,
-        saved_anthropic: Option<String>,
+        saved_openai_base: Option<String>,
     }
 
-    impl Drop for AuraTestEnv {
+    impl Drop for NotesTestEnv {
         fn drop(&mut self) {
-            std::env::remove_var("CTX_DISABLE_FASTEMBED");
             std::env::remove_var("CTX_PATH");
             std::env::remove_var("HOME");
             restore_optional_env("OPENAI_API_KEY", self.saved_openai.as_deref());
-            restore_optional_env("ANTHROPIC_API_KEY", self.saved_anthropic.as_deref());
+            restore_optional_env("CTX_OPENAI_BASE_URL", self.saved_openai_base.as_deref());
         }
     }
 
-    fn setup_aura_env() -> AuraTestEnv {
+    fn setup_notes_env() -> NotesTestEnv {
         let tempdir = TempDir::new().expect("tempdir");
         let home_root = TempDir::new().expect("home root");
+        let server = crate::test_support::MockOpenAiServer::start();
 
         let saved_openai = std::env::var("OPENAI_API_KEY").ok();
-        let saved_anthropic = std::env::var("ANTHROPIC_API_KEY").ok();
-        std::env::remove_var("OPENAI_API_KEY");
-        std::env::remove_var("ANTHROPIC_API_KEY");
+        let saved_openai_base = std::env::var("CTX_OPENAI_BASE_URL").ok();
 
         std::env::set_var("HOME", home_root.path());
         std::env::set_var("CTX_PATH", tempdir.path());
-        std::env::set_var("CTX_DISABLE_FASTEMBED", "1");
+        std::env::set_var("OPENAI_API_KEY", "test-openai-key");
+        std::env::set_var("CTX_OPENAI_BASE_URL", server.base_url());
 
-        AuraTestEnv {
+        NotesTestEnv {
             _tempdir: tempdir,
             _home_root: home_root,
+            _server: server,
             saved_openai,
-            saved_anthropic,
+            saved_openai_base,
         }
     }
 
     #[tokio::test]
-    async fn aura_seeded_on_init() {
+    async fn notes_seeded_on_init() {
         let _guard = crate::test_support::env_lock()
             .lock()
             .expect("test lock poisoned");
-        let _env = setup_aura_env();
+        let _env = setup_notes_env();
 
-        init_context("aura-seed").await.expect("init context");
-        let ctx_path = open_existing_context("aura-seed").expect("open context");
+        init_context("notes-seed").await.expect("init context");
+        let ctx_path = open_existing_context("notes-seed").expect("open context");
 
-        let aura_dir = aura_path(&ctx_path);
-        assert!(aura_dir.join("index.md").exists());
-        assert!(aura_dir.join("aura.md").exists());
+        let notes_dir = notes_path(&ctx_path);
+        assert!(notes_dir.join("index.md").exists());
+        assert!(notes_dir.join("summary.md").exists());
 
         let manifest = Manifest::load(&ctx_path).expect("load manifest");
         let paths: Vec<&str> = manifest
-            .aura
+            .notes
             .files
             .iter()
             .map(|entry| entry.path.as_str())
             .collect();
-        assert!(paths.contains(&"aura/index.md"));
-        assert!(paths.contains(&"aura/aura.md"));
-        for entry in &manifest.aura.files {
+        assert!(paths.contains(&"notes/index.md"));
+        assert!(paths.contains(&"notes/summary.md"));
+        for entry in &manifest.notes.files {
             assert!(!entry.hash.is_empty());
         }
     }
 
     #[tokio::test]
-    async fn aura_writeback_round_trip() {
+    async fn init_context_requires_openai_key() {
         let _guard = crate::test_support::env_lock()
             .lock()
             .expect("test lock poisoned");
-        let _env = setup_aura_env();
+        let tempdir = TempDir::new().expect("tempdir");
+        let home_root = TempDir::new().expect("home root");
 
-        init_context("aura-write").await.expect("init context");
+        let saved_openai = std::env::var("OPENAI_API_KEY").ok();
+        let saved_openai_base = std::env::var("CTX_OPENAI_BASE_URL").ok();
 
-        let outcome = write_aura_file(
-            "aura-write",
-            "aura/auth.md",
+        std::env::set_var("HOME", home_root.path());
+        std::env::set_var("CTX_PATH", tempdir.path());
+        std::env::remove_var("OPENAI_API_KEY");
+        std::env::remove_var("CTX_OPENAI_BASE_URL");
+
+        let error = init_context("missing-key").await.expect_err("missing api key");
+        assert!(error.to_string().contains("OPENAI_API_KEY is required"));
+
+        std::env::remove_var("CTX_PATH");
+        std::env::remove_var("HOME");
+        restore_optional_env("OPENAI_API_KEY", saved_openai.as_deref());
+        restore_optional_env("CTX_OPENAI_BASE_URL", saved_openai_base.as_deref());
+    }
+
+    #[tokio::test]
+    async fn notes_writeback_round_trip() {
+        let _guard = crate::test_support::env_lock()
+            .lock()
+            .expect("test lock poisoned");
+        let _env = setup_notes_env();
+
+        init_context("notes-write").await.expect("init context");
+
+        let outcome = write_notes_file(
+            "notes-write",
+            "notes/auth.md",
             "# Auth notes\n\nRS256 tokens only.\n",
-            AuraWriteMode::Replace,
+            NotesWriteMode::Replace,
         )
-        .expect("write aura file");
-        assert_eq!(outcome.path, "aura/topics/auth.md");
+        .expect("write notes file");
+        assert_eq!(outcome.path, "notes/topics/auth.md");
         assert!(!outcome.hash.is_empty());
 
-        let ctx_path = open_existing_context("aura-write").expect("open context");
-        assert!(ctx_path.join("aura/topics/auth.md").exists());
-        assert!(!ctx_path.join("aura/auth.md").exists());
-        let content = read_aura_file(&ctx_path, "aura/auth.md").expect("read aura file");
+        let ctx_path = open_existing_context("notes-write").expect("open context");
+        assert!(ctx_path.join("notes/topics/auth.md").exists());
+        assert!(!ctx_path.join("notes/auth.md").exists());
+        let content = read_notes_file(&ctx_path, "notes/auth.md").expect("read notes file");
         assert!(content.content.contains("RS256 tokens only"));
         assert_eq!(content.hash, outcome.hash);
 
         let manifest = Manifest::load(&ctx_path).expect("load manifest");
         let entry = manifest
-            .aura
+            .notes
             .files
             .iter()
-            .find(|entry| entry.path == "aura/topics/auth.md")
+            .find(|entry| entry.path == "notes/topics/auth.md")
             .expect("manifest entry");
         assert_eq!(entry.hash, outcome.hash);
 
-        write_aura_file(
-            "aura-write",
-            "aura/auth.md",
+        write_notes_file(
+            "notes-write",
+            "notes/auth.md",
             "Additional note.\n",
-            AuraWriteMode::Append,
+            NotesWriteMode::Append,
         )
-        .expect("append aura file");
-        let appended = read_aura_file(&ctx_path, "aura/auth.md").expect("re-read");
+        .expect("append notes file");
+        let appended = read_notes_file(&ctx_path, "notes/auth.md").expect("re-read");
         assert!(appended.content.contains("RS256 tokens only"));
         assert!(appended.content.contains("Additional note."));
     }
 
     #[tokio::test]
-    async fn aura_read_tool_round_trip() {
+    async fn notes_read_tool_round_trip() {
         let _guard = crate::test_support::env_lock()
             .lock()
             .expect("test lock poisoned");
-        let _env = setup_aura_env();
+        let _env = setup_notes_env();
 
-        init_context("aura-read").await.expect("init context");
-        write_aura_file(
-            "aura-read",
-            "aura/deploy.md",
+        init_context("notes-read").await.expect("init context");
+        write_notes_file(
+            "notes-read",
+            "notes/deploy.md",
             "deploy steps",
-            AuraWriteMode::Replace,
+            NotesWriteMode::Replace,
         )
         .expect("seed topic file");
 
-        let ctx_path = open_existing_context("aura-read").expect("open context");
-        let summary = read_aura_summary(&ctx_path).expect("read summary");
+        let ctx_path = open_existing_context("notes-read").expect("open context");
+        let summary = read_notes_summary(&ctx_path).expect("read summary");
         assert!(summary.index.is_some());
-        assert!(summary.aura.is_some());
+        assert!(summary.summary.is_some());
         assert!(summary
             .topics
-            .contains(&String::from("aura/topics/deploy.md")));
+            .contains(&String::from("notes/topics/deploy.md")));
 
-        let content = read_aura_file(&ctx_path, "aura/deploy.md").expect("read file");
-        assert_eq!(content.path, "aura/topics/deploy.md");
+        let content = read_notes_file(&ctx_path, "notes/deploy.md").expect("read file");
+        assert_eq!(content.path, "notes/topics/deploy.md");
         assert_eq!(content.content, "deploy steps");
     }
 
@@ -2027,7 +2366,7 @@ mod tests {
         let _guard = crate::test_support::env_lock()
             .lock()
             .expect("test lock poisoned");
-        let _env = setup_aura_env();
+        let _env = setup_notes_env();
 
         init_context("drift-manifest").await.expect("init context");
         let ctx_path = open_existing_context("drift-manifest").expect("open context");
@@ -2071,7 +2410,7 @@ mod tests {
         let _guard = crate::test_support::env_lock()
             .lock()
             .expect("test lock poisoned");
-        let _env = setup_aura_env();
+        let _env = setup_notes_env();
 
         init_context("drift-status").await.expect("init context");
         let ctx_path = open_existing_context("drift-status").expect("open context");
@@ -2121,7 +2460,7 @@ mod tests {
         let _guard = crate::test_support::env_lock()
             .lock()
             .expect("test lock poisoned");
-        let _env = setup_aura_env();
+        let _env = setup_notes_env();
 
         init_context("drift-query").await.expect("init context");
         let ctx_path = open_existing_context("drift-query").expect("open context");
@@ -2154,7 +2493,7 @@ mod tests {
         let _guard = crate::test_support::env_lock()
             .lock()
             .expect("test lock poisoned");
-        let _env = setup_aura_env();
+        let _env = setup_notes_env();
 
         init_context("drift-update").await.expect("init context");
         let ctx_path = open_existing_context("drift-update").expect("open context");
@@ -2194,60 +2533,61 @@ mod tests {
     }
 
     #[test]
-    fn canonical_aura_path_redirects_root_topic() {
-        assert_eq!(canonical_aura_path("aura/foo.md"), "aura/topics/foo.md");
-        assert_eq!(canonical_aura_path("aura/bar.md"), "aura/topics/bar.md");
+    fn canonical_notes_path_redirects_root_topic() {
+        assert_eq!(canonical_notes_path("notes/foo.md"), "notes/topics/foo.md");
+        assert_eq!(canonical_notes_path("aura/foo.md"), "notes/topics/foo.md");
     }
 
     #[test]
-    fn canonical_aura_path_preserves_reserved() {
-        assert_eq!(canonical_aura_path("aura/aura.md"), "aura/aura.md");
-        assert_eq!(canonical_aura_path("aura/index.md"), "aura/index.md");
+    fn canonical_notes_path_preserves_reserved() {
+        assert_eq!(canonical_notes_path("notes/summary.md"), "notes/summary.md");
+        assert_eq!(canonical_notes_path("aura/aura.md"), "notes/summary.md");
+        assert_eq!(canonical_notes_path("notes/index.md"), "notes/index.md");
     }
 
     #[test]
-    fn canonical_aura_path_preserves_explicit_subdir() {
+    fn canonical_notes_path_preserves_explicit_subdir() {
         assert_eq!(
-            canonical_aura_path("aura/topics/foo.md"),
-            "aura/topics/foo.md"
+            canonical_notes_path("notes/topics/foo.md"),
+            "notes/topics/foo.md"
         );
         assert_eq!(
-            canonical_aura_path("aura/scratch/foo.md"),
-            "aura/scratch/foo.md"
+            canonical_notes_path("notes/scratch/foo.md"),
+            "notes/scratch/foo.md"
         );
     }
 
     #[tokio::test]
-    async fn aura_refresh_detects_external_edit() {
+    async fn notes_refresh_detects_external_edit() {
         let _guard = crate::test_support::env_lock()
             .lock()
             .expect("test lock poisoned");
-        let _env = setup_aura_env();
+        let _env = setup_notes_env();
 
-        init_context("aura-drift").await.expect("init context");
-        let ctx_path = open_existing_context("aura-drift").expect("open context");
+        init_context("notes-drift").await.expect("init context");
+        let ctx_path = open_existing_context("notes-drift").expect("open context");
 
         let manifest_before = Manifest::load(&ctx_path).expect("load manifest");
         let before_hash = manifest_before
-            .aura
+            .notes
             .files
             .iter()
-            .find(|entry| entry.path == "aura/index.md")
+            .find(|entry| entry.path == "notes/index.md")
             .expect("index entry")
             .hash
             .clone();
 
-        let index_path = aura_path(&ctx_path).join("index.md");
-        fs::write(&index_path, "# Aura Index\n\nEdited externally.\n").expect("external edit");
+        let index_path = notes_path(&ctx_path).join("index.md");
+        fs::write(&index_path, "# Notes Index\n\nEdited externally.\n").expect("external edit");
 
-        update_context("aura-drift").await.expect("update context");
+        update_context("notes-drift").await.expect("update context");
 
         let manifest_after = Manifest::load(&ctx_path).expect("reload manifest");
         let after = manifest_after
-            .aura
+            .notes
             .files
             .iter()
-            .find(|entry| entry.path == "aura/index.md")
+            .find(|entry| entry.path == "notes/index.md")
             .expect("index entry after refresh");
         assert_ne!(after.hash, before_hash);
     }
@@ -2269,7 +2609,7 @@ mod tests {
         let _guard = crate::test_support::env_lock()
             .lock()
             .expect("test lock poisoned");
-        let _env = setup_aura_env();
+        let _env = setup_notes_env();
 
         init_context("blob-add").await.expect("init context");
         let ctx_path = open_existing_context("blob-add").expect("open context");
@@ -2307,7 +2647,7 @@ mod tests {
         let _guard = crate::test_support::env_lock()
             .lock()
             .expect("test lock poisoned");
-        let _env = setup_aura_env();
+        let _env = setup_notes_env();
 
         init_context("blob-default").await.expect("init context");
         let ctx_path = open_existing_context("blob-default").expect("open context");
@@ -2341,7 +2681,7 @@ mod tests {
         let _guard = crate::test_support::env_lock()
             .lock()
             .expect("test lock poisoned");
-        let _env = setup_aura_env();
+        let _env = setup_notes_env();
 
         init_context("blob-dedupe").await.expect("init context");
         let ctx_path = open_existing_context("blob-dedupe").expect("open context");
@@ -2368,7 +2708,7 @@ mod tests {
         let _guard = crate::test_support::env_lock()
             .lock()
             .expect("test lock poisoned");
-        let _env = setup_aura_env();
+        let _env = setup_notes_env();
 
         init_context("blob-drift").await.expect("init context");
         let ctx_path = open_existing_context("blob-drift").expect("open context");
@@ -2413,7 +2753,7 @@ mod tests {
         let _guard = crate::test_support::env_lock()
             .lock()
             .expect("test lock poisoned");
-        let _env = setup_aura_env();
+        let _env = setup_notes_env();
 
         init_context("verify-ok").await.expect("init context");
 
@@ -2437,7 +2777,7 @@ mod tests {
         let _guard = crate::test_support::env_lock()
             .lock()
             .expect("test lock poisoned");
-        let _env = setup_aura_env();
+        let _env = setup_notes_env();
 
         init_context("verify-tamper").await.expect("init context");
         let ctx_path = open_existing_context("verify-tamper").expect("open context");
@@ -2477,7 +2817,7 @@ mod tests {
         let _guard = crate::test_support::env_lock()
             .lock()
             .expect("test lock poisoned");
-        let _env = setup_aura_env();
+        let _env = setup_notes_env();
 
         init_context("verify-missing").await.expect("init context");
         let ctx_path = open_existing_context("verify-missing").expect("open context");
@@ -2517,7 +2857,7 @@ mod tests {
         let _guard = crate::test_support::env_lock()
             .lock()
             .expect("test lock poisoned");
-        let _env = setup_aura_env();
+        let _env = setup_notes_env();
 
         init_context("verify-orphan").await.expect("init context");
         let ctx_path = open_existing_context("verify-orphan").expect("open context");

@@ -29,6 +29,11 @@ fn migrate_legacy_manifest_map(map: &mut Map<String, Value>) -> Result<()> {
             map.insert("sources".to_string(), legacy_entries_to_sources(entries, map)?);
         }
     }
+    if !map.contains_key("notes") {
+        if let Some(notes) = map.remove("aura") {
+            map.insert("notes".to_string(), notes);
+        }
+    }
     Ok(())
 }
 
@@ -117,10 +122,16 @@ pub struct ManifestConfig {
     // Spec §4.2 fields.
     #[serde(default)]
     pub store_raw_content: bool,
-    #[serde(default = "default_aura_update_threshold_days")]
-    pub aura_update_threshold_days: u32,
-    #[serde(default = "default_aura_update_min_topics")]
-    pub aura_update_min_topics: u32,
+    #[serde(
+        default = "default_notes_update_threshold_days",
+        alias = "aura_update_threshold_days"
+    )]
+    pub notes_update_threshold_days: u32,
+    #[serde(
+        default = "default_notes_update_min_topics",
+        alias = "aura_update_min_topics"
+    )]
+    pub notes_update_min_topics: u32,
     pub embedding_model: String,
     // Retained runtime knobs (not in spec).
     pub splade_enabled: bool,
@@ -130,11 +141,11 @@ pub struct ManifestConfig {
     pub extra: Map<String, Value>,
 }
 
-fn default_aura_update_threshold_days() -> u32 {
+fn default_notes_update_threshold_days() -> u32 {
     7
 }
 
-fn default_aura_update_min_topics() -> u32 {
+fn default_notes_update_min_topics() -> u32 {
     3
 }
 
@@ -142,10 +153,10 @@ impl Default for ManifestConfig {
     fn default() -> Self {
         Self {
             store_raw_content: false,
-            aura_update_threshold_days: default_aura_update_threshold_days(),
-            aura_update_min_topics: default_aura_update_min_topics(),
-            embedding_model: "fastembed:all-MiniLM-L6-v2".into(),
-            splade_enabled: true,
+            notes_update_threshold_days: default_notes_update_threshold_days(),
+            notes_update_min_topics: default_notes_update_min_topics(),
+            embedding_model: "openai:text-embedding-3-small".into(),
+            splade_enabled: false,
             extraction_model: "openai:gpt-5.4-nano".into(),
             extra: Map::new(),
         }
@@ -189,7 +200,7 @@ pub struct SourceEntry {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AuraFile {
+pub struct NoteFile {
     pub path: String,
     pub hash: String,
     pub updated_at: DateTime<Utc>,
@@ -199,9 +210,9 @@ pub struct AuraFile {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct AuraRegistry {
+pub struct NotesRegistry {
     #[serde(default)]
-    pub files: Vec<AuraFile>,
+    pub files: Vec<NoteFile>,
     /// Unknown JSON keys preserved across round-trips (spec §6.10, §12.4).
     #[serde(default, flatten)]
     pub extra: Map<String, Value>,
@@ -216,8 +227,8 @@ pub struct Manifest {
     pub config: ManifestConfig,
     #[serde(default)]
     pub sources: Vec<SourceEntry>,
-    #[serde(default)]
-    pub aura: AuraRegistry,
+    #[serde(default, alias = "aura")]
+    pub notes: NotesRegistry,
     /// Unknown JSON keys preserved across round-trips (spec §6.10, §12.4).
     #[serde(default, flatten)]
     pub extra: Map<String, Value>,
@@ -233,7 +244,7 @@ impl Manifest {
             updated_at: now,
             config: ManifestConfig::default(),
             sources: Vec::new(),
-            aura: AuraRegistry::default(),
+            notes: NotesRegistry::default(),
             extra: Map::new(),
         }
     }
@@ -305,28 +316,28 @@ impl Manifest {
         self.sources.last_mut().expect("source just pushed")
     }
 
-    /// Finds the mutable `AuraFile` keyed by `path`, if present.
-    pub fn aura_entry_for_mut(&mut self, path: &str) -> Option<&mut AuraFile> {
-        self.aura.files.iter_mut().find(|entry| entry.path == path)
+    /// Finds the mutable notes entry keyed by `path`, if present.
+    pub fn note_entry_for_mut(&mut self, path: &str) -> Option<&mut NoteFile> {
+        self.notes.files.iter_mut().find(|entry| entry.path == path)
     }
 
-    /// Inserts or updates an aura registry entry, refreshing `updated_at` only when `hash` changed.
-    pub fn upsert_aura(&mut self, path: &str, hash: &str) -> &mut AuraFile {
-        if let Some(position) = self.aura.files.iter().position(|entry| entry.path == path) {
-            let entry = &mut self.aura.files[position];
+    /// Inserts or updates a notes registry entry, refreshing `updated_at` only when `hash` changed.
+    pub fn upsert_note(&mut self, path: &str, hash: &str) -> &mut NoteFile {
+        if let Some(position) = self.notes.files.iter().position(|entry| entry.path == path) {
+            let entry = &mut self.notes.files[position];
             if entry.hash != hash {
                 entry.hash = hash.to_string();
                 entry.updated_at = Utc::now();
             }
-            return &mut self.aura.files[position];
+            return &mut self.notes.files[position];
         }
-        self.aura.files.push(AuraFile {
+        self.notes.files.push(NoteFile {
             path: path.to_string(),
             hash: hash.to_string(),
             updated_at: Utc::now(),
             extra: Map::new(),
         });
-        self.aura.files.last_mut().expect("aura entry just pushed")
+        self.notes.files.last_mut().expect("note entry just pushed")
     }
 }
 
@@ -411,14 +422,14 @@ mod tests {
               "updated_at": "2026-04-16T00:00:00Z",
               "config": {{
                 "store_raw_content": false,
-                "aura_update_threshold_days": 7,
-                "aura_update_min_topics": 3,
-                "embedding_model": "fastembed:all-MiniLM-L6-v2",
-                "splade_enabled": true,
+                "notes_update_threshold_days": 7,
+                "notes_update_min_topics": 3,
+                "embedding_model": "openai:text-embedding-3-small",
+                "splade_enabled": false,
                 "extraction_model": "openai:gpt-5.4-nano"
               }},
               "sources": [],
-              "aura": {{ "files": [] }}
+              "notes": {{ "files": [] }}
             }}"#
         )
     }
@@ -452,15 +463,15 @@ mod tests {
           "updated_at": "2026-04-16T00:00:00Z",
           "config": {
             "store_raw_content": false,
-            "aura_update_threshold_days": 7,
-            "aura_update_min_topics": 3,
-            "embedding_model": "fastembed:all-MiniLM-L6-v2",
-            "splade_enabled": true,
+            "notes_update_threshold_days": 7,
+            "notes_update_min_topics": 3,
+            "embedding_model": "openai:text-embedding-3-small",
+            "splade_enabled": false,
             "extraction_model": "openai:gpt-5.4-nano",
             "custom_knob": 7
           },
           "sources": [],
-          "aura": { "files": [] }
+          "notes": { "files": [] }
         }"#;
         write_manifest(dir.path(), json);
 
@@ -490,10 +501,10 @@ mod tests {
           "updated_at": "2026-04-16T00:00:00Z",
           "config": {
             "store_raw_content": false,
-            "aura_update_threshold_days": 7,
-            "aura_update_min_topics": 3,
-            "embedding_model": "fastembed:all-MiniLM-L6-v2",
-            "splade_enabled": true,
+            "notes_update_threshold_days": 7,
+            "notes_update_min_topics": 3,
+            "embedding_model": "openai:text-embedding-3-small",
+            "splade_enabled": false,
             "extraction_model": "openai:gpt-5.4-nano"
           },
           "sources": [
@@ -513,11 +524,11 @@ mod tests {
               ]
             }
           ],
-          "aura": {
+          "notes": {
             "policy": "private",
             "files": [
               {
-                "path": "aura/index.md",
+                "path": "notes/index.md",
                 "hash": "sha256:0",
                 "updated_at": "2026-04-16T00:00:00Z",
                 "owner": "alice"
@@ -537,11 +548,11 @@ mod tests {
             Some(&Value::String("pinned".into()))
         );
         assert_eq!(
-            manifest.aura.extra.get("policy"),
+            manifest.notes.extra.get("policy"),
             Some(&Value::String("private".into()))
         );
         assert_eq!(
-            manifest.aura.files[0].extra.get("owner"),
+            manifest.notes.files[0].extra.get("owner"),
             Some(&Value::String("alice".into()))
         );
 
@@ -571,9 +582,9 @@ mod tests {
           "name": "homes",
           "created": "2026-04-15T20:34:25.331072Z",
           "config": {
-            "splade_enabled": true,
+            "splade_enabled": false,
             "extraction_model": "openai:gpt-5.4-nano",
-            "embedding_model": "fastembed:all-MiniLM-L6-v2"
+            "embedding_model": "openai:text-embedding-3-small"
           },
           "entries": []
         }"#;
@@ -593,9 +604,9 @@ mod tests {
           "name": "demo",
           "created": "2026-04-13T19:20:19.010418Z",
           "config": {
-            "splade_enabled": true,
+            "splade_enabled": false,
             "extraction_model": "openai:gpt-5.4-nano",
-            "embedding_model": "fastembed:all-MiniLM-L6-v2"
+            "embedding_model": "openai:text-embedding-3-small"
           },
           "entries": [
             {

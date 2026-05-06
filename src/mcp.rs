@@ -13,13 +13,13 @@ use rmcp::{
 
 use crate::extraction::classifier::ContentLayer;
 use crate::mcp::tools::{
-    AddToolInput, AddToolOutput, AuraReadToolInput, AuraReadToolOutput, AuraSummaryDto,
-    AuraWriteToolInput, AuraWriteToolOutput, QueryToolInput, QueryToolOutput, RecordToolInput,
+    AddToolInput, AddToolOutput, NotesReadToolInput, NotesReadToolOutput, NotesSummaryDto,
+    NotesWriteToolInput, NotesWriteToolOutput, QueryToolInput, QueryToolOutput, RecordToolInput,
     RecordToolOutput,
 };
 use crate::retrieval::query::QueryType;
 use crate::store::schema::RecordProcedureInput;
-use crate::AuraWriteMode;
+use crate::NotesWriteMode;
 
 #[derive(Debug, Clone)]
 pub struct CtxMcpServer {
@@ -77,14 +77,14 @@ impl CtxMcpServer {
         .map_err(internal_error)?;
 
         let ctx_path = crate::open_existing_context(&input.ctx).map_err(internal_error)?;
-        let summary = crate::read_aura_summary(&ctx_path).map_err(internal_error)?;
+        let summary = crate::read_notes_summary(&ctx_path).map_err(internal_error)?;
         let drift = crate::drift_state(&ctx_path).map_err(internal_error)?;
 
         Ok(Json(QueryToolOutput {
             results,
-            aura: AuraSummaryDto {
+            notes: NotesSummaryDto {
                 index: summary.index,
-                aura: summary.aura,
+                summary: summary.summary,
                 topics: summary.topics,
             },
             drift_detected: drift.drift_detected,
@@ -117,16 +117,16 @@ impl CtxMcpServer {
     }
 
     #[tool(
-        name = "ctx_aura_read",
-        description = "read an aura file from a context"
+        name = "ctx_notes_read",
+        description = "read a notes file from a context"
     )]
-    pub async fn ctx_aura_read(
+    pub async fn ctx_notes_read(
         &self,
-        Parameters(input): Parameters<AuraReadToolInput>,
-    ) -> Result<Json<AuraReadToolOutput>, ErrorData> {
+        Parameters(input): Parameters<NotesReadToolInput>,
+    ) -> Result<Json<NotesReadToolOutput>, ErrorData> {
         let ctx_path = crate::open_existing_context(&input.ctx).map_err(internal_error)?;
-        let content = crate::read_aura_file(&ctx_path, &input.path).map_err(internal_error)?;
-        Ok(Json(AuraReadToolOutput {
+        let content = crate::read_notes_file(&ctx_path, &input.path).map_err(internal_error)?;
+        Ok(Json(NotesReadToolOutput {
             path: content.path,
             content: content.content,
             hash: content.hash,
@@ -134,17 +134,17 @@ impl CtxMcpServer {
     }
 
     #[tool(
-        name = "ctx_aura_write",
-        description = "write or append to an aura file in a context"
+        name = "ctx_notes_write",
+        description = "write or append to a notes file in a context"
     )]
-    pub async fn ctx_aura_write(
+    pub async fn ctx_notes_write(
         &self,
-        Parameters(input): Parameters<AuraWriteToolInput>,
-    ) -> Result<Json<AuraWriteToolOutput>, ErrorData> {
-        let mode = AuraWriteMode::parse(input.mode.as_deref()).map_err(internal_error)?;
-        let outcome = crate::write_aura_file(&input.ctx, &input.path, &input.content, mode)
+        Parameters(input): Parameters<NotesWriteToolInput>,
+    ) -> Result<Json<NotesWriteToolOutput>, ErrorData> {
+        let mode = NotesWriteMode::parse(input.mode.as_deref()).map_err(internal_error)?;
+        let outcome = crate::write_notes_file(&input.ctx, &input.path, &input.content, mode)
             .map_err(internal_error)?;
-        Ok(Json(AuraWriteToolOutput {
+        Ok(Json(NotesWriteToolOutput {
             path: outcome.path,
             hash: outcome.hash,
         }))

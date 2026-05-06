@@ -4,7 +4,7 @@ Draft white paper for review
 
 ## Abstract
 
-AI agents increasingly need persistent context that survives across sessions, tools, and environments. Existing approaches either hide state inside opaque memory services or rely on informal files that are easy to create but hard to standardize. CTX addresses this gap with a portable context container specification. A CTX artifact is a directory-based container composed of a manifest, structured retrieval indices, a human-readable aura layer, and optional raw-content blobs. The design keeps context locally inspectable while making it possible to publish or query a remote instance through a registry-backed distribution profile. We argue that portability is valuable not because context is merely stored somewhere else, but because the artifact itself remains legible, versioned, and interoperable across implementations. In this paper, efficacy is supporting evidence: CTX works because the structure makes persistent context easier to inspect, update, and reuse.
+AI agents increasingly need persistent context that survives across sessions, tools, and environments. Existing approaches either hide state inside opaque memory services or rely on informal files that are easy to create but hard to standardize. CTX addresses this gap with a portable context container specification. A CTX artifact is a directory-based container composed of a manifest, structured retrieval indices, a human-readable notes layer, and optional raw-content blobs. The design keeps context locally inspectable while making it possible to publish or query a remote instance through a registry-backed distribution profile. We argue that portability is valuable not because context is merely stored somewhere else, but because the artifact itself remains legible, versioned, and interoperable across implementations. In this paper, efficacy is supporting evidence: CTX works because the structure makes persistent context easier to inspect, update, and reuse.
 
 ## 1. Introduction (main text)
 
@@ -20,7 +20,7 @@ This paper makes four primary contributions.
 
 First, it defines CTX as an artifact-centric model for portable context rather than as an internal memory abstraction.
 
-Second, it specifies the major components of the artifact: manifest, indices, aura, and optional blobs.
+Second, it specifies the major components of the artifact: manifest, indices, notes, and optional blobs.
 
 Third, it separates the core artifact format from the distribution profile so remote publication and remote query can evolve independently of the on-disk structure.
 
@@ -41,7 +41,7 @@ CTX therefore distinguishes among several kinds of state:
 - the manifest, which is the authoritative index
 - the semantic index, which supports meaning-oriented retrieval
 - the procedural index, which stores workflow and outcome records
-- the aura layer, which is meant to remain human-readable and editable
+- the notes layer, which is meant to remain human-readable and editable
 - optional blobs, which preserve raw content when desired
 
 That separation is the point. It allows context to be both machine-useful and human-legible.
@@ -54,25 +54,25 @@ At minimum, a CTX artifact contains:
 
 - `manifest.json`
 - `index/`
-- `aura/`
+- `notes/`
 
 It may also contain `blobs/` if raw content storage is enabled.
 
-The manifest binds the artifact together. It records the artifact name, version, timestamps, configuration, source roots, file entries, and aura file metadata. The aura layer provides a compact, inspectable form of long-lived context. The indices capture the structured retrieval surface used by agents and tools.
+The manifest binds the artifact together. It records the artifact name, version, timestamps, configuration, source roots, file entries, and notes file metadata. The notes layer provides a compact, inspectable form of long-lived context. The indices capture the structured retrieval surface used by agents and tools.
 
 ### 5.1 Manifest and integrity
 
-The manifest is the artifact’s source of truth. It records the version, timestamps, configuration, and the material associated with the artifact. CTX’s current implementation already models source entries, file hashes, hash-at-index values, and aura registry entries.
+The manifest is the artifact’s source of truth. It records the version, timestamps, configuration, and the material associated with the artifact. CTX’s current implementation already models source entries, file hashes, hash-at-index values, and notes registry entries.
 
 The manifest also supports drift detection. If a file changes after it has been indexed, the artifact should know that the indexed representation may no longer match the source. That explicit drift signal is important because it keeps state transitions visible. Instead of silently rewriting context, CTX can report what changed and let the user or tool decide what to do next.
 
 Integrity is based on content addressing. Hashes allow the artifact to detect tampering, deduplicate identical content, and preserve stable references over time. Raw-content storage is optional. CTX can therefore work in a hash-only mode when the user wants a lighter artifact, or in a richer mode when the original content should be retained inside the container.
 
-### 5.2 Aura layer
+### 5.2 Notes layer
 
 A key design choice in CTX is to keep a human-readable accumulation layer at the center of the system.
 
-The aura layer is not an implementation detail. It is the durable, editable surface where useful context accumulates over time. In the current architecture, `aura/index.md` acts as a hub or table of contents, `aura/aura.md` stores stabilized knowledge, and topic files capture focused notes for specific concerns.
+The notes layer is not an implementation detail. It is the durable, editable surface where useful context accumulates over time. In the current architecture, `notes/index.md` acts as a hub or table of contents, `notes/summary.md` stores stabilized knowledge, and topic files capture focused notes for specific concerns.
 
 This matters because persistent context is not only for model consumption. It is also for humans who need to inspect what an agent knows, correct it, or refine it. A good context system should therefore remain understandable without specialized tooling.
 
@@ -86,7 +86,7 @@ The semantic side is for meaning-oriented search over source-derived content. Th
 
 Blobs are optional. That is an important part of the design.
 
-A CTX artifact does not need to store all raw source content in order to be useful. In many cases, hashes, summaries, extracted records, and aura entries are enough. When raw content is needed, it can be stored under the artifact as a content-addressed blob.
+A CTX artifact does not need to store all raw source content in order to be useful. In many cases, hashes, summaries, extracted records, and notes entries are enough. When raw content is needed, it can be stored under the artifact as a content-addressed blob.
 
 ## 6. Distribution profile (main text)
 
@@ -114,7 +114,7 @@ The system should work because it makes the hard parts explicit:
 
 This makes CTX easier to inspect and easier to trust. It also makes it easier for multiple tools to share one context model without agreeing on a single backend implementation.
 
-Supportive evidence for the design comes from the architecture itself: the repository already separates semantic and procedural retrieval, exposes context through a CLI, HTTP API, and MCP server, and stores artifact metadata in a manifest that tracks source and aura state. In other words, CTX already behaves like a portable artifact system; the specification simply makes that shape explicit.
+Supportive evidence for the design comes from the architecture itself: the repository already separates semantic and procedural retrieval, exposes context through a CLI, HTTP API, and MCP server, and stores artifact metadata in a manifest that tracks source and notes state. In other words, CTX already behaves like a portable artifact system; the specification simply makes that shape explicit.
 
 ## 8. Limitations and future work (main text)
 
@@ -126,7 +126,7 @@ Those omissions are deliberate. The purpose of this paper is to define the artif
 
 ## 9. Conclusion (main text)
 
-CTX proposes that context for AI agents should be treated as a portable artifact rather than a hidden service. By combining a manifest, structured indices, a human-readable aura layer, optional blobs, and a separate distribution profile, CTX provides a concrete format for persistent context that is inspectable, local-first, and interoperable.
+CTX proposes that context for AI agents should be treated as a portable artifact rather than a hidden service. By combining a manifest, structured indices, a human-readable notes layer, optional blobs, and a separate distribution profile, CTX provides a concrete format for persistent context that is inspectable, local-first, and interoperable.
 
 The main contribution is the specification itself. If the artifact can be standardized, then the ecosystem around it can evolve independently. That is the practical promise of CTX: portable context, not portable lock-in.
 
@@ -138,9 +138,9 @@ example.ctx/
   index/
     semantic/
     procedural/
-  aura/
+  notes/
     index.md
-    aura.md
+    summary.md
     topics/
       architecture.md
       decisions.md
@@ -161,10 +161,10 @@ example.ctx/
     "store_raw_content": false,
     "promotion_threshold_days": 7,
     "promotion_min_occurrences": 3,
-    "embedding_model": "fastembed:all-MiniLM-L6-v2"
+    "embedding_model": "openai:text-embedding-3-small"
   },
   "sources": [],
-  "aura": { "files": [] }
+  "notes": { "files": [] }
 }
 ```
 
@@ -172,5 +172,5 @@ example.ctx/
 
 - This draft is intentionally compatible with the current CTX architecture while leaving room for future registry and sync work.
 - The current reference implementation exposes a CLI, HTTP API, and MCP server, but the artifact spec MUST remain independent of those surfaces.
-- The current codebase already models manifest metadata, source entries, aura registry entries, semantic and procedural indexes, and drift-sensitive updates.
+- The current codebase already models manifest metadata, source entries, notes registry entries, semantic and procedural indexes, and drift-sensitive updates.
 - Publish and pull are treated here as a separate profile because they are not yet implemented in the reference CLI.

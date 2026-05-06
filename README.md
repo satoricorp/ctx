@@ -15,8 +15,8 @@ Data lives under **`~/.ctx`** by default (override with **`CTX_PATH`**). This re
 ## Requirements
 
 - **Rust** (stable), recent enough for the 2021 edition — install via [rustup](https://rustup.rs/).
-- **Optional API keys** — `OPENAI_API_KEY` and/or `ANTHROPIC_API_KEY` for cloud-backed model selection when you run `ctx init` (see [First-run model setup](#first-run-model-setup)).
-- **Network** on first run if you use local models — FastEmbed pulls embedding assets, and interactive local extraction setup can pull a GGUF model for `llama.cpp`.
+- **`OPENAI_API_KEY`** — required for extraction and embeddings.
+- **Network access to OpenAI** — `ctx` now uses OpenAI for both extraction and embeddings.
 
 ---
 
@@ -64,7 +64,7 @@ with `-v` / `--verbose`.
 Context resolution for commands that accept `-c` follows:
 
 1. explicit `-c/--context`
-2. `CTX_IMAGE` (legacy env alias for selected context name)
+2. `CTX_IMAGE` (selected context name)
 3. config default from `ctx use <context>`
 4. current directory name inference
 
@@ -88,20 +88,15 @@ For **`ctx add`** on a directory and for **`ctx update`**, ctx can **plan** work
 
 ---
 
-## First-run model setup
+## First-run setup
 
-On the first **`ctx init`**, the CLI creates **`~/.ctx/config.json`** and aligns the local model cache with your environment:
+On the first **`ctx init`**, the CLI creates **`~/.ctx/config.json`** and normalizes it to the supported OpenAI-only runtime:
 
-- If **`OPENAI_API_KEY`** is set, config prefers **`openai:gpt-5.4-nano`** for extraction (Chat Completions with **`reasoning_effort: low`** for speed).
-- If **`ANTHROPIC_API_KEY`** is set, config prefers **`anthropic:claude-sonnet-4-6`** for extraction.
-- Otherwise, you are prompted for the local extraction tier and optional SPLADE setup.
-- Default local assets are warmed through **fastembed** (for example **`all-MiniLM-L6-v2`** and **`BGERerankerBase`**).
-- If you choose **`gemma4-e4b`** or **`gemma4-26b-a4b`** in a real terminal, `ctx` now preinstalls the matching GGUF model and uses embedded **`llama.cpp`** inference for semantic and procedural extraction.
-- Headless first-run setup keeps the chosen local extraction model in config, but defers the GGUF download until the first extraction request.
-- **`CTX_DISABLE_FASTEMBED=1`** skips FastEmbed downloads and keeps a deterministic dense fallback (for **`fastembed:`** embeddings only; OpenAI embeddings ignore this flag).
-- **`CTX_SKIP_LLAMA_DOWNLOAD=1`** disables automatic GGUF downloads and forces extraction to fall back to heuristics if the local model is missing.
+- **`extraction_model`** defaults to **`openai:gpt-5.4-nano`**.
+- **`embedding_model`** defaults to **`openai:text-embedding-3-small`**.
+- **`OPENAI_API_KEY`** is required. `ctx init` reads it from your shell environment and fails fast if it is missing.
 
-**Cloud models:** With **`OPENAI_API_KEY`** set, **`openai:…`** extraction models use the OpenAI Chat Completions API (JSON responses). With **`ANTHROPIC_API_KEY`** set, **`anthropic:…`** models use the Anthropic Messages API. First-time setup with an OpenAI key also defaults **`embedding_model`** to **`openai:text-embedding-3-large`**; you can set **`embedding_model`** to **`openai:text-embedding-3-small`** or keep **`fastembed:…`** if you prefer. Switching embedding models after indexing a context requires re-indexing for consistent vector search.
+The current runtime uses OpenAI for both extraction and embeddings. Notes on the earlier multi-backend design live in [docs/embedded-models-archive.md](docs/embedded-models-archive.md).
 
 ---
 
@@ -128,15 +123,10 @@ Routes include:
 | **`CTX_HOST`** | API bind host for `ctx-server`. |
 | **`CTX_PORT`** | API port for `ctx-server`. |
 | **`PORT`** | Fallback port in hosted environments. |
-| **`OPENAI_API_KEY`** | Enables OpenAI-backed extraction model selection in config. |
-| **`ANTHROPIC_API_KEY`** | Enables Anthropic-backed extraction model selection in config. |
-| **`CTX_DISABLE_FASTEMBED=1`** | Skips FastEmbed downloads; uses deterministic dense fallback. |
-| **`CTX_SKIP_LLAMA_DOWNLOAD=1`** | Skips automatic GGUF downloads for local extraction models. |
-| **`CTX_LLAMA_MAX_TOKENS`** | Optional local llama generation cap (default `768`). |
-| **`CTX_LLAMA_TIMEOUT_MS`** | Optional local llama timeout in milliseconds (default `45000`). |
-| **`CTX_LLAMA_N_CTX`** | Optional local llama context window (default `8192`). |
+| **`OPENAI_API_KEY`** | Required for OpenAI-backed extraction and embeddings. |
+| **`CTX_OPENAI_BASE_URL`** | Optional base URL override for OpenAI-compatible APIs and test doubles. |
 | **`CTX_SEMANTIC_CHUNK_MERGE_MAX_TOKENS`** | Optional cap (`token_count`, rough chars÷4): merge adjacent semantic chunks until the next would exceed this budget. Default `0` (no merge). |
-| **`CTX_EMBEDDING_BATCH_SIZE`** | Max texts per OpenAI / FastEmbed embedding batch (default `256`, clamped 1–2048). |
+| **`CTX_EMBEDDING_BATCH_SIZE`** | Max texts per OpenAI embedding batch (default `256`, clamped 1–2048). |
 | **`CTX_SEMANTIC_INGEST_CONCURRENCY`** | Parallel semantic **LLM** extractions per document (default `4`). Embeddings run in one batched phase after extraction. |
 
 ---
@@ -144,7 +134,6 @@ Routes include:
 ## Dependency notes
 
 - **`helix-db`** is vendored under `vendor/helix/` from [HelixDB/helix-db](https://github.com/HelixDB/helix-db) (with a tiny stdout tweak); the crates.io release is still not what this repo uses.
-- **`llama-cpp-2`** and **`encoding_rs`** are now included directly for embedded local extraction.
 
 ---
 

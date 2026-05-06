@@ -41,8 +41,8 @@ pub fn blobs_path(ctx_path: &Path) -> PathBuf {
     ctx_path.join("blobs").join("sha256")
 }
 
-pub fn aura_path(ctx_path: &Path) -> PathBuf {
-    ctx_path.join("aura")
+pub fn notes_path(ctx_path: &Path) -> PathBuf {
+    ctx_path.join("notes")
 }
 
 /// Durable indexing job state, logs, and lockfile (`active.json`, `job-*.log`, `lock`).

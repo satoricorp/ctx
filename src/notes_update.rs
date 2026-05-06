@@ -1,7 +1,7 @@
-//! Aura update cycle (spec §8.7, §10.6). Runs inside `ctx update`:
-//! distills stable aura topic files into a single `## Auto-updated knowledge`
-//! H2 section inside `aura/aura.md`. Topic files are left untouched; the
-//! existing aura registry entry for `aura/aura.md` is refreshed so the new
+//! Notes update cycle (spec §8.7, §10.6). Runs inside `ctx update`:
+//! distills stable notes topic files into a single `## Auto-updated notes`
+//! H2 section inside `notes/summary.md`. Topic files are left untouched; the
+//! existing notes registry entry for `notes/summary.md` is refreshed so the new
 //! hash is recorded.
 
 use anyhow::{Context, Result};
@@ -12,13 +12,13 @@ use std::fs;
 use std::future::Future;
 use std::path::Path;
 
-use crate::artifact::{aura_path, Manifest};
+use crate::artifact::{notes_path, Manifest};
 
-const AURA_UPDATE_HEADING: &str = "## Auto-updated knowledge";
+const NOTES_UPDATE_HEADING: &str = "## Auto-updated notes";
 const LEGACY_PROMOTED_HEADING: &str = "## Promoted knowledge";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AuraUpdateOutcome {
+pub struct NotesUpdateOutcome {
     pub candidates_considered: usize,
     pub promoted_paths: Vec<String>,
     pub skipped: Option<SkippedReason>,
@@ -40,8 +40,8 @@ pub struct StableTopic {
 }
 
 /// Production entry point. Invoked from `update_context`.
-pub async fn update_aura(ctx_path: &Path) -> Result<AuraUpdateOutcome> {
-    update_aura_internal(ctx_path, extraction_available(), |prompt| async move {
+pub async fn update_notes(ctx_path: &Path) -> Result<NotesUpdateOutcome> {
+    update_notes_internal(ctx_path, extraction_available(), |prompt| async move {
         crate::models::llm::complete_json(&prompt).await
     })
     .await
@@ -51,31 +51,31 @@ pub async fn update_aura(ctx_path: &Path) -> Result<AuraUpdateOutcome> {
 /// the raw JSON body shaped like `{"distilled_markdown": "..."}`. When
 /// `extraction_configured` is false, the update short-circuits with
 /// `SkippedReason::ExtractionUnconfigured` and the distiller is never invoked.
-async fn update_aura_internal<F, Fut>(
+async fn update_notes_internal<F, Fut>(
     ctx_path: &Path,
     extraction_configured: bool,
     distill_json: F,
-) -> Result<AuraUpdateOutcome>
+) -> Result<NotesUpdateOutcome>
 where
     F: FnOnce(String) -> Fut,
     Fut: Future<Output = Result<String>>,
 {
     let mut manifest = Manifest::load(ctx_path)?;
-    let threshold_days = manifest.config.aura_update_threshold_days;
-    let min_topics = manifest.config.aura_update_min_topics;
+    let threshold_days = manifest.config.notes_update_threshold_days;
+    let min_topics = manifest.config.notes_update_min_topics;
 
     let candidates = collect_stable_topics(ctx_path, &manifest, Utc::now(), threshold_days)?;
     let considered = candidates.len();
 
     if considered == 0 {
-        return Ok(AuraUpdateOutcome {
+        return Ok(NotesUpdateOutcome {
             candidates_considered: 0,
             promoted_paths: Vec::new(),
             skipped: Some(SkippedReason::NoStableTopics),
         });
     }
     if (considered as u32) < min_topics {
-        return Ok(AuraUpdateOutcome {
+        return Ok(NotesUpdateOutcome {
             candidates_considered: considered,
             promoted_paths: Vec::new(),
             skipped: Some(SkippedReason::BelowMinTopics {
@@ -85,17 +85,17 @@ where
         });
     }
     if !extraction_configured {
-        return Ok(AuraUpdateOutcome {
+        return Ok(NotesUpdateOutcome {
             candidates_considered: considered,
             promoted_paths: Vec::new(),
             skipped: Some(SkippedReason::ExtractionUnconfigured),
         });
     }
 
-    let aura_md_path = aura_path(ctx_path).join("aura.md");
-    let existing = if aura_md_path.exists() {
-        fs::read_to_string(&aura_md_path)
-            .with_context(|| format!("read {}", aura_md_path.display()))?
+    let summary_path = notes_path(ctx_path).join("summary.md");
+    let existing = if summary_path.exists() {
+        fs::read_to_string(&summary_path)
+            .with_context(|| format!("read {}", summary_path.display()))?
     } else {
         String::new()
     };
@@ -106,7 +106,7 @@ where
     let raw = match distill_json(prompt).await {
         Ok(raw) => raw,
         Err(err) => {
-            return Ok(AuraUpdateOutcome {
+            return Ok(NotesUpdateOutcome {
                 candidates_considered: considered,
                 promoted_paths: Vec::new(),
                 skipped: Some(SkippedReason::LlmError(format!("{err:#}"))),
@@ -117,7 +117,7 @@ where
     let distilled = match parse_distillation(&raw) {
         Ok(body) => body,
         Err(err) => {
-            return Ok(AuraUpdateOutcome {
+            return Ok(NotesUpdateOutcome {
                 candidates_considered: considered,
                 promoted_paths: Vec::new(),
                 skipped: Some(SkippedReason::LlmError(format!("{err:#}"))),
@@ -126,14 +126,14 @@ where
     };
 
     let merged = replace_auto_updated_section(&existing, &distilled);
-    fs::write(&aura_md_path, &merged)
-        .with_context(|| format!("write {}", aura_md_path.display()))?;
+    fs::write(&summary_path, &merged)
+        .with_context(|| format!("write {}", summary_path.display()))?;
 
-    crate::refresh_aura_registry(ctx_path, &mut manifest)?;
+    crate::refresh_notes_registry(ctx_path, &mut manifest)?;
     manifest.save(ctx_path)?;
 
     let promoted_paths = candidates.into_iter().map(|c| c.path).collect();
-    Ok(AuraUpdateOutcome {
+    Ok(NotesUpdateOutcome {
         candidates_considered: considered,
         promoted_paths,
         skipped: None,
@@ -142,7 +142,7 @@ where
 
 /// True when the configured extraction model has a callable backend.
 fn extraction_available() -> bool {
-    crate::models::llm::should_use_cloud_extraction() || crate::models::llm::should_use_local_llm()
+    crate::models::llm::should_use_cloud_extraction()
 }
 
 fn collect_stable_topics(
@@ -153,8 +153,8 @@ fn collect_stable_topics(
 ) -> Result<Vec<StableTopic>> {
     let cutoff = now - Duration::days(threshold_days as i64);
     let mut out = Vec::new();
-    for entry in &manifest.aura.files {
-        if entry.path == "aura/index.md" || entry.path == "aura/aura.md" {
+    for entry in &manifest.notes.files {
+        if entry.path == "notes/index.md" || entry.path == "notes/summary.md" {
             continue;
         }
         if entry.updated_at > cutoff {
@@ -184,13 +184,13 @@ fn collect_stable_topics(
 fn build_prompt(topics: &[StableTopic], existing_section: &str) -> String {
     let mut body = String::new();
     body.push_str(
-        "You distill stable aura notes into concise long-term memory.\n\n\
+        "You distill stable project notes into concise long-term memory.\n\n\
          Produce a JSON object with exactly one key, \"distilled_markdown\", whose value \
          is a markdown string summarizing the stable, shared knowledge across the topic \
          files below. Keep per-source citations inline as \"(source: <path>)\". Do not \
          repeat information already present in the existing auto-updated section.\n\n",
     );
-    body.push_str("Existing `## Auto-updated knowledge` section:\n");
+    body.push_str("Existing `## Auto-updated notes` section:\n");
     if existing_section.trim().is_empty() {
         body.push_str("(none)\n");
     } else {
@@ -233,7 +233,7 @@ fn parse_distillation(raw: &str) -> Result<String> {
 }
 
 /// Returns the body of the existing auto-updated section, matching either the
-/// current `## Auto-updated knowledge` heading or the legacy
+/// current `## Auto-updated notes` heading or the legacy
 /// `## Promoted knowledge` heading (for in-place migration).
 fn extract_auto_updated_section(existing: &str) -> Option<String> {
     let (start, end) = locate_auto_updated_section(existing)?;
@@ -246,7 +246,7 @@ fn extract_auto_updated_section(existing: &str) -> Option<String> {
 /// Locate the byte range of the current or legacy auto-updated section
 /// (heading line through the line before the next H2 or EOF).
 fn locate_auto_updated_section(existing: &str) -> Option<(usize, usize)> {
-    let is_managed_heading = |s: &str| s == AURA_UPDATE_HEADING || s == LEGACY_PROMOTED_HEADING;
+    let is_managed_heading = |s: &str| s == NOTES_UPDATE_HEADING || s == LEGACY_PROMOTED_HEADING;
 
     let mut cursor = 0usize;
     let mut heading_start: Option<usize> = None;
@@ -272,7 +272,7 @@ fn locate_auto_updated_section(existing: &str) -> Option<(usize, usize)> {
 
 fn replace_auto_updated_section(existing: &str, body: &str) -> String {
     let body = body.trim_end_matches('\n').to_string();
-    let new_section = format!("{AURA_UPDATE_HEADING}\n\n{body}\n");
+    let new_section = format!("{NOTES_UPDATE_HEADING}\n\n{body}\n");
 
     if let Some((start, end)) = locate_auto_updated_section(existing) {
         let mut out = String::with_capacity(existing.len() + new_section.len());
@@ -309,8 +309,8 @@ fn hash_bytes(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
     use crate::{
-        aura_path as aura_dir, init_context, open_existing_context, test_support, write_aura_file,
-        AuraWriteMode,
+        init_context, notes_path as notes_dir, open_existing_context, test_support, write_notes_file,
+        NotesWriteMode,
     };
     use tempfile::TempDir;
 
@@ -318,16 +318,13 @@ mod tests {
         _tempdir: TempDir,
         _home_root: TempDir,
         saved_openai: Option<String>,
-        saved_anthropic: Option<String>,
     }
 
     impl Drop for PromoEnv {
         fn drop(&mut self) {
-            std::env::remove_var("CTX_DISABLE_FASTEMBED");
             std::env::remove_var("CTX_PATH");
             std::env::remove_var("HOME");
             restore_optional_env("OPENAI_API_KEY", self.saved_openai.as_deref());
-            restore_optional_env("ANTHROPIC_API_KEY", self.saved_anthropic.as_deref());
         }
     }
 
@@ -342,22 +339,18 @@ mod tests {
         let tempdir = TempDir::new().expect("tempdir");
         let home_root = TempDir::new().expect("home root");
         let saved_openai = std::env::var("OPENAI_API_KEY").ok();
-        let saved_anthropic = std::env::var("ANTHROPIC_API_KEY").ok();
-        std::env::remove_var("OPENAI_API_KEY");
-        std::env::remove_var("ANTHROPIC_API_KEY");
+        std::env::set_var("OPENAI_API_KEY", "test-openai-key");
         std::env::set_var("HOME", home_root.path());
         std::env::set_var("CTX_PATH", tempdir.path());
-        std::env::set_var("CTX_DISABLE_FASTEMBED", "1");
         PromoEnv {
             _tempdir: tempdir,
             _home_root: home_root,
             saved_openai,
-            saved_anthropic,
         }
     }
 
     fn backdate_topic(manifest: &mut Manifest, path: &str, days: i64) {
-        if let Some(entry) = manifest.aura.files.iter_mut().find(|e| e.path == path) {
+        if let Some(entry) = manifest.notes.files.iter_mut().find(|e| e.path == path) {
             entry.updated_at = Utc::now() - Duration::days(days);
         }
     }
@@ -374,13 +367,13 @@ mod tests {
         std::pin::Pin<Box<dyn Future<Output = Result<String>> + Send + 'static>>;
 
     #[tokio::test]
-    async fn aura_update_skipped_without_stable_topics() {
+    async fn notes_update_skipped_without_stable_topics() {
         let _guard = test_support::env_lock().lock().expect("lock");
         let _env = setup_env();
         init_context("promote-empty").await.expect("init");
         let ctx_path = open_existing_context("promote-empty").expect("open");
 
-        let outcome = update_aura_internal(&ctx_path, true, fake_distiller("should not be called"))
+        let outcome = update_notes_internal(&ctx_path, true, fake_distiller("should not be called"))
             .await
             .expect("run");
 
@@ -389,33 +382,33 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn aura_update_skipped_below_min_topics() {
+    async fn notes_update_skipped_below_min_topics() {
         let _guard = test_support::env_lock().lock().expect("lock");
         let _env = setup_env();
         init_context("promote-few").await.expect("init");
 
-        write_aura_file(
+        write_notes_file(
             "promote-few",
-            "aura/a.md",
+            "notes/a.md",
             "topic a",
-            AuraWriteMode::Replace,
+            NotesWriteMode::Replace,
         )
         .expect("write a");
-        write_aura_file(
+        write_notes_file(
             "promote-few",
-            "aura/b.md",
+            "notes/b.md",
             "topic b",
-            AuraWriteMode::Replace,
+            NotesWriteMode::Replace,
         )
         .expect("write b");
 
         let ctx_path = open_existing_context("promote-few").expect("open");
         let mut manifest = Manifest::load(&ctx_path).expect("load");
-        backdate_topic(&mut manifest, "aura/topics/a.md", 30);
-        backdate_topic(&mut manifest, "aura/topics/b.md", 30);
+        backdate_topic(&mut manifest, "notes/topics/a.md", 30);
+        backdate_topic(&mut manifest, "notes/topics/b.md", 30);
         manifest.save(&ctx_path).expect("save");
 
-        let outcome = update_aura_internal(&ctx_path, true, fake_distiller("should not be called"))
+        let outcome = update_notes_internal(&ctx_path, true, fake_distiller("should not be called"))
             .await
             .expect("run");
 
@@ -430,23 +423,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn aura_update_respects_threshold_days() {
+    async fn notes_update_respects_threshold_days() {
         let _guard = test_support::env_lock().lock().expect("lock");
         let _env = setup_env();
         init_context("promote-fresh").await.expect("init");
 
         for i in 0..3 {
-            write_aura_file(
+            write_notes_file(
                 "promote-fresh",
-                &format!("aura/t{i}.md"),
+                &format!("notes/t{i}.md"),
                 &format!("fresh topic {i}"),
-                AuraWriteMode::Replace,
+                NotesWriteMode::Replace,
             )
             .expect("write");
         }
 
         let ctx_path = open_existing_context("promote-fresh").expect("open");
-        let outcome = update_aura_internal(&ctx_path, true, fake_distiller("should not be called"))
+        let outcome = update_notes_internal(&ctx_path, true, fake_distiller("should not be called"))
             .await
             .expect("run");
 
@@ -455,17 +448,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn aura_update_replaces_section_idempotently() {
+    async fn notes_update_replaces_section_idempotently() {
         let _guard = test_support::env_lock().lock().expect("lock");
         let _env = setup_env();
         init_context("promote-idem").await.expect("init");
 
         for i in 0..3 {
-            write_aura_file(
+            write_notes_file(
                 "promote-idem",
-                &format!("aura/t{i}.md"),
+                &format!("notes/t{i}.md"),
                 &format!("body {i}"),
-                AuraWriteMode::Replace,
+                NotesWriteMode::Replace,
             )
             .expect("write");
         }
@@ -473,90 +466,90 @@ mod tests {
         let ctx_path = open_existing_context("promote-idem").expect("open");
         let mut manifest = Manifest::load(&ctx_path).expect("load");
         for i in 0..3 {
-            backdate_topic(&mut manifest, &format!("aura/topics/t{i}.md"), 30);
+            backdate_topic(&mut manifest, &format!("notes/topics/t{i}.md"), 30);
         }
         manifest.save(&ctx_path).expect("save");
 
         let body = "distilled line one\ndistilled line two";
-        let outcome = update_aura_internal(&ctx_path, true, fake_distiller(body))
+        let outcome = update_notes_internal(&ctx_path, true, fake_distiller(body))
             .await
             .expect("run");
         assert!(outcome.skipped.is_none(), "{:?}", outcome.skipped);
         assert_eq!(outcome.candidates_considered, 3);
         assert_eq!(outcome.promoted_paths.len(), 3);
 
-        let aura_md = aura_dir(&ctx_path).join("aura.md");
-        let first = fs::read_to_string(&aura_md).expect("read aura.md");
-        assert_eq!(first.matches(AURA_UPDATE_HEADING).count(), 1);
+        let summary_md = notes_dir(&ctx_path).join("summary.md");
+        let first = fs::read_to_string(&summary_md).expect("read summary.md");
+        assert_eq!(first.matches(NOTES_UPDATE_HEADING).count(), 1);
         assert!(first.contains("distilled line one"));
 
-        update_aura_internal(&ctx_path, true, fake_distiller(body))
+        update_notes_internal(&ctx_path, true, fake_distiller(body))
             .await
             .expect("run 2");
-        let second = fs::read_to_string(&aura_md).expect("read aura.md");
-        assert_eq!(second.matches(AURA_UPDATE_HEADING).count(), 1);
+        let second = fs::read_to_string(&summary_md).expect("read summary.md");
+        assert_eq!(second.matches(NOTES_UPDATE_HEADING).count(), 1);
         assert!(second.contains("distilled line one"));
     }
 
     #[tokio::test]
-    async fn aura_update_preserves_existing_aura_content() {
+    async fn notes_update_preserves_existing_notes_content() {
         let _guard = test_support::env_lock().lock().expect("lock");
         let _env = setup_env();
         init_context("promote-preserve").await.expect("init");
 
         let ctx_path = open_existing_context("promote-preserve").expect("open");
-        let aura_md = aura_dir(&ctx_path).join("aura.md");
-        fs::write(&aura_md, "# Aura\n\nhandcrafted line.\n").expect("seed aura.md");
+        let summary_md = notes_dir(&ctx_path).join("summary.md");
+        fs::write(&summary_md, "# Notes Summary\n\nhandcrafted line.\n").expect("seed summary.md");
 
         for i in 0..3 {
-            write_aura_file(
+            write_notes_file(
                 "promote-preserve",
-                &format!("aura/t{i}.md"),
+                &format!("notes/t{i}.md"),
                 &format!("body {i}"),
-                AuraWriteMode::Replace,
+                NotesWriteMode::Replace,
             )
             .expect("write");
         }
 
         let mut manifest = Manifest::load(&ctx_path).expect("load");
         for i in 0..3 {
-            backdate_topic(&mut manifest, &format!("aura/topics/t{i}.md"), 30);
+            backdate_topic(&mut manifest, &format!("notes/topics/t{i}.md"), 30);
         }
-        // Also refresh the aura.md entry so our handcrafted hash matches the file on disk.
-        let handcrafted_bytes = fs::read(&aura_md).expect("read aura.md");
+        // Also refresh the summary.md entry so our handcrafted hash matches the file on disk.
+        let handcrafted_bytes = fs::read(&summary_md).expect("read summary.md");
         if let Some(entry) = manifest
-            .aura
+            .notes
             .files
             .iter_mut()
-            .find(|e| e.path == "aura/aura.md")
+            .find(|e| e.path == "notes/summary.md")
         {
             entry.hash = hash_bytes(&handcrafted_bytes);
         }
         manifest.save(&ctx_path).expect("save");
 
-        let outcome = update_aura_internal(&ctx_path, true, fake_distiller("promoted body"))
+        let outcome = update_notes_internal(&ctx_path, true, fake_distiller("promoted body"))
             .await
             .expect("run");
         assert!(outcome.skipped.is_none());
 
-        let final_content = fs::read_to_string(&aura_md).expect("read");
+        let final_content = fs::read_to_string(&summary_md).expect("read");
         assert!(final_content.contains("handcrafted line."));
-        assert!(final_content.contains(AURA_UPDATE_HEADING));
+        assert!(final_content.contains(NOTES_UPDATE_HEADING));
         assert!(final_content.contains("promoted body"));
     }
 
     #[tokio::test]
-    async fn aura_update_skipped_when_extraction_unconfigured() {
+    async fn notes_update_skipped_when_extraction_unconfigured() {
         let _guard = test_support::env_lock().lock().expect("lock");
         let _env = setup_env();
         init_context("promote-unconf").await.expect("init");
 
         for i in 0..3 {
-            write_aura_file(
+            write_notes_file(
                 "promote-unconf",
-                &format!("aura/t{i}.md"),
+                &format!("notes/t{i}.md"),
                 &format!("body {i}"),
-                AuraWriteMode::Replace,
+                NotesWriteMode::Replace,
             )
             .expect("write");
         }
@@ -564,75 +557,76 @@ mod tests {
         let ctx_path = open_existing_context("promote-unconf").expect("open");
         let mut manifest = Manifest::load(&ctx_path).expect("load");
         for i in 0..3 {
-            backdate_topic(&mut manifest, &format!("aura/topics/t{i}.md"), 30);
+            backdate_topic(&mut manifest, &format!("notes/topics/t{i}.md"), 30);
         }
         manifest.save(&ctx_path).expect("save");
 
-        // No API key is set in setup_env; extraction_model defaults to an OpenAI model.
-        let outcome = update_aura(&ctx_path).await.expect("run");
+        std::env::remove_var("OPENAI_API_KEY");
+
+        let outcome = update_notes(&ctx_path).await.expect("run");
         assert_eq!(outcome.skipped, Some(SkippedReason::ExtractionUnconfigured));
     }
 
     #[tokio::test]
-    async fn aura_update_migrates_legacy_promoted_heading() {
+    async fn notes_update_migrates_legacy_promoted_heading() {
         let _guard = test_support::env_lock().lock().expect("lock");
         let _env = setup_env();
         init_context("promote-legacy").await.expect("init");
 
         let ctx_path = open_existing_context("promote-legacy").expect("open");
-        let aura_md = aura_dir(&ctx_path).join("aura.md");
+        let summary_md = notes_dir(&ctx_path).join("summary.md");
         fs::write(
-            &aura_md,
-            format!("# Aura\n\n{LEGACY_PROMOTED_HEADING}\n\nold body\n"),
+            &summary_md,
+            format!("# Notes Summary\n\n{LEGACY_PROMOTED_HEADING}\n\nold body\n"),
         )
-        .expect("seed aura.md");
+        .expect("seed summary.md");
 
         for i in 0..3 {
-            write_aura_file(
+            write_notes_file(
                 "promote-legacy",
-                &format!("aura/t{i}.md"),
+                &format!("notes/t{i}.md"),
                 &format!("body {i}"),
-                AuraWriteMode::Replace,
+                NotesWriteMode::Replace,
             )
             .expect("write");
         }
 
         let mut manifest = Manifest::load(&ctx_path).expect("load");
         for i in 0..3 {
-            backdate_topic(&mut manifest, &format!("aura/topics/t{i}.md"), 30);
+            backdate_topic(&mut manifest, &format!("notes/topics/t{i}.md"), 30);
         }
-        let seeded = fs::read(&aura_md).expect("read aura.md");
+        let seeded = fs::read(&summary_md).expect("read summary.md");
         if let Some(entry) = manifest
-            .aura
+            .notes
             .files
             .iter_mut()
-            .find(|e| e.path == "aura/aura.md")
+            .find(|e| e.path == "notes/summary.md")
         {
             entry.hash = hash_bytes(&seeded);
         }
         manifest.save(&ctx_path).expect("save");
 
-        let outcome = update_aura_internal(&ctx_path, true, fake_distiller("fresh body"))
+        let outcome = update_notes_internal(&ctx_path, true, fake_distiller("fresh body"))
             .await
             .expect("run");
         assert!(outcome.skipped.is_none(), "{:?}", outcome.skipped);
 
-        let content = fs::read_to_string(&aura_md).expect("read");
+        let content = fs::read_to_string(&summary_md).expect("read");
         assert!(
             !content.contains(LEGACY_PROMOTED_HEADING),
             "legacy heading remained: {content}"
         );
-        assert_eq!(content.matches(AURA_UPDATE_HEADING).count(), 1);
+        assert_eq!(content.matches(NOTES_UPDATE_HEADING).count(), 1);
         assert!(content.contains("fresh body"));
         assert!(!content.contains("old body"));
     }
 
     #[test]
     fn replace_auto_updated_section_appends_when_absent() {
-        let input = "# Aura\n\nfirst line.\n";
+        let input = "# Notes Summary\n\nfirst line.\n";
         let out = replace_auto_updated_section(input, "body");
         assert!(out.contains("first line."));
-        let idx = out.find(AURA_UPDATE_HEADING).expect("heading present");
+        let idx = out.find(NOTES_UPDATE_HEADING).expect("heading present");
         assert!(idx > input.find("first line.").unwrap());
         assert!(out.contains("\nbody\n"));
     }
@@ -640,10 +634,10 @@ mod tests {
     #[test]
     fn replace_auto_updated_section_replaces_when_present() {
         let input = format!(
-            "# Aura\n\npreamble.\n\n{AURA_UPDATE_HEADING}\n\nold body\n\n## Other\n\ntrailing\n"
+            "# Notes Summary\n\npreamble.\n\n{NOTES_UPDATE_HEADING}\n\nold body\n\n## Other\n\ntrailing\n"
         );
         let out = replace_auto_updated_section(&input, "new body");
-        assert_eq!(out.matches(AURA_UPDATE_HEADING).count(), 1);
+        assert_eq!(out.matches(NOTES_UPDATE_HEADING).count(), 1);
         assert!(out.contains("new body"));
         assert!(!out.contains("old body"));
         assert!(out.contains("## Other"));
@@ -653,11 +647,11 @@ mod tests {
     #[test]
     fn replace_auto_updated_section_migrates_legacy_heading() {
         let input = format!(
-            "# Aura\n\npreamble.\n\n{LEGACY_PROMOTED_HEADING}\n\nlegacy body\n\n## Other\n\ntrailing\n"
+            "# Notes Summary\n\npreamble.\n\n{LEGACY_PROMOTED_HEADING}\n\nlegacy body\n\n## Other\n\ntrailing\n"
         );
         let out = replace_auto_updated_section(&input, "new body");
         assert!(!out.contains(LEGACY_PROMOTED_HEADING));
-        assert_eq!(out.matches(AURA_UPDATE_HEADING).count(), 1);
+        assert_eq!(out.matches(NOTES_UPDATE_HEADING).count(), 1);
         assert!(out.contains("new body"));
         assert!(!out.contains("legacy body"));
         assert!(out.contains("## Other"));

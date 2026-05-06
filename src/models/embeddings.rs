@@ -1,52 +1,16 @@
 use anyhow::{anyhow, Context, Result};
-use fastembed::{
-    EmbeddingModel, RerankInitOptions, RerankerModel, SparseInitOptions, SparseModel,
-    SparseTextEmbedding, TextEmbedding, TextInitOptions, TextRerank,
-};
-use std::collections::{hash_map::DefaultHasher, HashSet};
-use std::fs;
-use std::hash::{Hash, Hasher};
-use std::path::Path;
-use std::sync::{Mutex, OnceLock};
+use std::collections::HashSet;
 
-use crate::install::{ensure_base_dirs, load_config, resolve_models_dir};
-
-const HASH_DIMENSIONS: usize = 384;
-
-enum EmbedderState {
-    Uninitialized,
-    Ready(TextEmbedding),
-    Failed(String),
-}
-
-static EMBEDDER: OnceLock<Mutex<EmbedderState>> = OnceLock::new();
-static FASTEMBED_FALLBACK_WARNED: OnceLock<()> = OnceLock::new();
+use crate::install::load_config;
 
 pub async fn embed_dense(text: &str) -> Result<Vec<f32>> {
     let text = text.to_owned();
     tokio::task::spawn_blocking(move || embed_dense_sync(&text)).await?
 }
 
-/// Embed many texts in one blocking call. OpenAI and FastEmbed use batched APIs (fewer HTTP / encode calls).
 pub async fn embed_dense_batch(texts: &[String]) -> Result<Vec<Vec<f32>>> {
     let texts = texts.to_vec();
     tokio::task::spawn_blocking(move || embed_dense_sync_batch(&texts)).await?
-}
-
-pub fn install_required_fastembed_assets(
-    cache_dir: &Path,
-    show_download_progress: bool,
-) -> Result<()> {
-    fs::create_dir_all(cache_dir)?;
-    let _embedder = create_dense_embedder(cache_dir, show_download_progress)?;
-    let _reranker = create_reranker(cache_dir, show_download_progress)?;
-    Ok(())
-}
-
-pub fn install_splade_asset(cache_dir: &Path, show_download_progress: bool) -> Result<()> {
-    fs::create_dir_all(cache_dir)?;
-    let _sparse = create_splade_embedder(cache_dir, show_download_progress)?;
-    Ok(())
 }
 
 pub fn cosine_similarity(left: &[f32], right: &[f32]) -> f32 {
@@ -108,38 +72,21 @@ fn embed_dense_sync_batch(texts: &[String]) -> Result<Vec<Vec<f32>>> {
     }
 
     let config = load_config().unwrap_or_default();
-    if let Some(model) = config.embedding_model.strip_prefix("openai:") {
-        let model = model.trim();
-        if !model.is_empty() {
-            return openai_embed_sync_batch(texts, model);
-        }
-    }
+    let model = config
+        .embedding_model
+        .strip_prefix("openai:")
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            anyhow!(
+                "unsupported embedding_model {}; only openai:* is supported",
+                config.embedding_model
+            )
+        })?;
 
-    if texts.iter().all(|t| t.trim().is_empty()) {
-        return Ok(vec![vec![0.0; HASH_DIMENSIONS]; texts.len()]);
-    }
-
-    if std::env::var("CTX_DISABLE_FASTEMBED").ok().as_deref() == Some("1") {
-        return Ok(texts
-            .iter()
-            .map(|t| hash_embedding(t, HASH_DIMENSIONS))
-            .collect());
-    }
-
-    match try_fastembed_batch(texts) {
-        Ok(embeddings) if embeddings.len() == texts.len() => Ok(embeddings),
-        Ok(_) => Err(anyhow!("fastembed batch length mismatch")),
-        Err(error) => {
-            warn_fastembed_fallback(&error);
-            Ok(texts
-                .iter()
-                .map(|t| hash_embedding(t, HASH_DIMENSIONS))
-                .collect())
-        }
-    }
+    openai_embed_sync_batch(texts, model)
 }
 
-/// Default output dimensions for OpenAI embedding models (no `dimensions` API parameter).
 fn openai_embedding_dimensions(model: &str) -> usize {
     let lower = model.to_ascii_lowercase();
     if lower.contains("3-large") {
@@ -148,8 +95,15 @@ fn openai_embedding_dimensions(model: &str) -> usize {
     if lower.contains("3-small") {
         return 1536;
     }
-    // ada-002 and most others
     1536
+}
+
+fn openai_base_url() -> String {
+    std::env::var("CTX_OPENAI_BASE_URL")
+        .ok()
+        .map(|value| value.trim_end_matches('/').to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| String::from("https://api.openai.com/v1"))
 }
 
 fn openai_embed_sync_batch(texts: &[String], model: &str) -> Result<Vec<Vec<f32>>> {
@@ -192,7 +146,7 @@ fn openai_embed_sync_batch(texts: &[String], model: &str) -> Result<Vec<Vec<f32>
         });
 
         let response = client
-            .post("https://api.openai.com/v1/embeddings")
+            .post(format!("{}/embeddings", openai_base_url()))
             .header("Authorization", format!("Bearer {}", api_key))
             .header("Content-Type", "application/json")
             .json(&body)
@@ -250,132 +204,4 @@ fn openai_embed_sync_batch(texts: &[String], model: &str) -> Result<Vec<Vec<f32>
     }
 
     Ok(out)
-}
-
-fn try_fastembed_batch(texts: &[String]) -> Result<Vec<Vec<f32>>> {
-    let embedder = EMBEDDER.get_or_init(|| Mutex::new(EmbedderState::Uninitialized));
-    let mut state = embedder.lock().expect("embedder lock poisoned");
-
-    if matches!(&*state, EmbedderState::Uninitialized) {
-        ensure_base_dirs().ok();
-        let config = load_config().unwrap_or_default();
-        let cache_dir = resolve_models_dir(&config);
-
-        match create_dense_embedder(&cache_dir, false) {
-            Ok(embedder) => *state = EmbedderState::Ready(embedder),
-            Err(error) => *state = EmbedderState::Failed(error.to_string()),
-        }
-    }
-
-    match &mut *state {
-        EmbedderState::Ready(embedder) => {
-            let batch_cap = embedding_batch_size();
-            let mut out: Vec<Vec<f32>> = Vec::with_capacity(texts.len());
-            for chunk in texts.chunks(batch_cap) {
-                if chunk.iter().all(|t| t.trim().is_empty()) {
-                    for _ in chunk {
-                        out.push(vec![0.0_f32; HASH_DIMENSIONS]);
-                    }
-                    continue;
-                }
-
-                let inputs: Vec<String> = chunk
-                    .iter()
-                    .map(|t| {
-                        if t.trim().is_empty() {
-                            String::from("passage: ")
-                        } else {
-                            format!("passage: {}", normalize_whitespace(t))
-                        }
-                    })
-                    .collect();
-
-                let embeddings = embedder.embed(inputs, None)?;
-                if embeddings.len() != chunk.len() {
-                    return Err(anyhow!(
-                        "fastembed returned {} vectors for {} inputs",
-                        embeddings.len(),
-                        chunk.len()
-                    ));
-                }
-
-                for (row, original) in embeddings.into_iter().zip(chunk.iter()) {
-                    if original.trim().is_empty() {
-                        out.push(vec![0.0_f32; HASH_DIMENSIONS]);
-                    } else {
-                        out.push(row);
-                    }
-                }
-            }
-            Ok(out)
-        }
-        EmbedderState::Failed(message) => Err(anyhow!(message.clone())),
-        EmbedderState::Uninitialized => Err(anyhow!("embedder did not initialize")),
-    }
-}
-
-fn create_dense_embedder(cache_dir: &Path, show_download_progress: bool) -> Result<TextEmbedding> {
-    let options = TextInitOptions::new(EmbeddingModel::AllMiniLML6V2)
-        .with_cache_dir(cache_dir.to_path_buf())
-        .with_show_download_progress(show_download_progress);
-    TextEmbedding::try_new(options)
-}
-
-fn create_reranker(cache_dir: &Path, show_download_progress: bool) -> Result<TextRerank> {
-    let options = RerankInitOptions::new(RerankerModel::BGERerankerBase)
-        .with_cache_dir(cache_dir.to_path_buf())
-        .with_show_download_progress(show_download_progress);
-    TextRerank::try_new(options)
-}
-
-fn create_splade_embedder(
-    cache_dir: &Path,
-    show_download_progress: bool,
-) -> Result<SparseTextEmbedding> {
-    let options = SparseInitOptions::new(SparseModel::SPLADEPPV1)
-        .with_cache_dir(cache_dir.to_path_buf())
-        .with_show_download_progress(show_download_progress);
-    SparseTextEmbedding::try_new(options)
-}
-
-fn normalize_whitespace(text: &str) -> String {
-    text.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-fn warn_fastembed_fallback(error: &anyhow::Error) {
-    // The runtime deliberately stays usable when model downloads fail, but we only
-    // want to surface that fallback once so local batch operations don't get noisy.
-    if FASTEMBED_FALLBACK_WARNED.set(()).is_ok() {
-        eprintln!(
-            "ctx: fastembed is unavailable ({error}). falling back to deterministic hash embeddings until the local models are installed."
-        );
-    }
-}
-
-fn hash_embedding(text: &str, dimensions: usize) -> Vec<f32> {
-    // This fallback keeps local indexing functional even before the full model install
-    // flow is complete. It behaves like a deterministic bag-of-words projection,
-    // so dense ranking stays stable without relying on network access.
-    let mut vector = vec![0.0_f32; dimensions];
-    for token in tokenize_terms(text) {
-        let mut hasher = DefaultHasher::new();
-        token.hash(&mut hasher);
-        let hash = hasher.finish() as usize;
-        let index = hash % dimensions;
-        let sign = if (hash / dimensions) % 2 == 0 {
-            1.0
-        } else {
-            -1.0
-        };
-        vector[index] += sign;
-    }
-
-    let norm = vector.iter().map(|value| value * value).sum::<f32>().sqrt();
-    if norm > 0.0 {
-        for value in &mut vector {
-            *value /= norm;
-        }
-    }
-
-    vector
 }
