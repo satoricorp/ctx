@@ -4,11 +4,9 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import {
   NavigationMenu,
-  NavigationMenuContent,
   NavigationMenuItem,
   NavigationMenuLink,
   NavigationMenuList,
-  NavigationMenuTrigger,
 } from "@/components/ui/navigation-menu";
 import { berkeleyMono, blobLogo } from "./fonts";
 
@@ -59,33 +57,13 @@ export function Nav() {
             </NavigationMenuItem>
 
             <NavigationMenuItem>
-              <NavigationMenuTrigger>Research</NavigationMenuTrigger>
-              <NavigationMenuContent
-                className={`${berkeleyMono.className} flex w-72 flex-col p-1`}
+              <NavigationMenuLink
+                href="https://github.com/satoricorp/ctx/blob/main/docs/ctx-spec-v0.2-draft.md"
+                target="_blank"
+                rel="noreferrer"
               >
-                <NavigationMenuLink
-                  href="https://arxiv.org/abs/TODO"
-                  target="_blank"
-                  rel="noreferrer"
-                  className="flex-col items-start gap-1"
-                >
-                  <div className="text-xs font-medium">arXiv</div>
-                  <p className="text-muted-foreground text-[11px] leading-snug">
-                    Read the paper behind the Portable Context Protocol.
-                  </p>
-                </NavigationMenuLink>
-                <NavigationMenuLink
-                  href="https://github.com/TODO/ctx-spec"
-                  target="_blank"
-                  rel="noreferrer"
-                  className="flex-col items-start gap-1"
-                >
-                  <div className="text-xs font-medium">Spec on GitHub</div>
-                  <p className="text-muted-foreground text-[11px] leading-snug">
-                    Browse the open specification and reference implementation.
-                  </p>
-                </NavigationMenuLink>
-              </NavigationMenuContent>
+                Spec
+              </NavigationMenuLink>
             </NavigationMenuItem>
           </NavigationMenuList>
         </NavigationMenu>
