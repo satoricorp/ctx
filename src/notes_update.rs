@@ -309,8 +309,8 @@ fn hash_bytes(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
     use crate::{
-        init_context, notes_path as notes_dir, open_existing_context, test_support, write_notes_file,
-        NotesWriteMode,
+        init_context, notes_path as notes_dir, open_existing_context, test_support,
+        write_notes_file, NotesWriteMode,
     };
     use tempfile::TempDir;
 
@@ -373,9 +373,10 @@ mod tests {
         init_context("promote-empty").await.expect("init");
         let ctx_path = open_existing_context("promote-empty").expect("open");
 
-        let outcome = update_notes_internal(&ctx_path, true, fake_distiller("should not be called"))
-            .await
-            .expect("run");
+        let outcome =
+            update_notes_internal(&ctx_path, true, fake_distiller("should not be called"))
+                .await
+                .expect("run");
 
         assert_eq!(outcome.candidates_considered, 0);
         assert_eq!(outcome.skipped, Some(SkippedReason::NoStableTopics));
@@ -408,9 +409,10 @@ mod tests {
         backdate_topic(&mut manifest, "notes/topics/b.md", 30);
         manifest.save(&ctx_path).expect("save");
 
-        let outcome = update_notes_internal(&ctx_path, true, fake_distiller("should not be called"))
-            .await
-            .expect("run");
+        let outcome =
+            update_notes_internal(&ctx_path, true, fake_distiller("should not be called"))
+                .await
+                .expect("run");
 
         assert_eq!(outcome.candidates_considered, 2);
         assert_eq!(
@@ -439,9 +441,10 @@ mod tests {
         }
 
         let ctx_path = open_existing_context("promote-fresh").expect("open");
-        let outcome = update_notes_internal(&ctx_path, true, fake_distiller("should not be called"))
-            .await
-            .expect("run");
+        let outcome =
+            update_notes_internal(&ctx_path, true, fake_distiller("should not be called"))
+                .await
+                .expect("run");
 
         assert_eq!(outcome.candidates_considered, 0);
         assert_eq!(outcome.skipped, Some(SkippedReason::NoStableTopics));

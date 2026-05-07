@@ -302,9 +302,7 @@ mod tests {
         let original = std::env::var("OPENAI_API_KEY").ok();
         std::env::remove_var("OPENAI_API_KEY");
         let error = ensure_local_setup().expect_err("missing api key");
-        assert!(error
-            .to_string()
-            .contains("OPENAI_API_KEY is required"));
+        assert!(error.to_string().contains("OPENAI_API_KEY is required"));
         if let Some(value) = original {
             std::env::set_var("OPENAI_API_KEY", value);
         }

@@ -2,10 +2,11 @@ use anyhow::Result;
 use clap::Args;
 
 #[derive(Debug, Args)]
+#[command(about = "Create a new local context")]
 pub struct InitArgs {
     #[arg(value_name = "name")]
     pub name: Option<String>,
-    /// Non-interactive. Reserved for scripts and CI.
+    /// Run without prompts.
     #[arg(short = 'y', long = "yes")]
     pub yes: bool,
 }

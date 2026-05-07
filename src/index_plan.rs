@@ -59,10 +59,7 @@ pub fn plan_add_directory(
     let root_str = root.display().to_string();
     let mut plan = WorkPlan::default();
 
-    for entry in WalkDir::new(root)
-        .into_iter()
-        .filter_map(|e| e.ok())
-    {
+    for entry in WalkDir::new(root).into_iter().filter_map(|e| e.ok()) {
         let entry_path = entry.path();
         if !entry.file_type().is_file() {
             continue;
@@ -83,13 +80,7 @@ pub fn plan_add_directory(
             .unwrap_or(entry_path)
             .to_path_buf();
 
-        match probe_index_file(
-            ctx_path,
-            &root_str,
-            &rel,
-            entry_path,
-            with_content,
-        ) {
+        match probe_index_file(ctx_path, &root_str, &rel, entry_path, with_content) {
             Ok(IndexFilePlan::SkipAlreadyIndexed) => {
                 plan.stats.skipped_already_indexed += 1;
             }
@@ -167,8 +158,7 @@ pub fn plan_manifest_update(ctx_path: &Path, with_content: bool) -> Result<WorkP
     let mut plan = WorkPlan::default();
 
     let mut targets: Vec<(PathBuf, PathBuf, Option<ContentLayer>)> = Vec::new();
-    let mut seen: std::collections::HashSet<(String, String)> =
-        std::collections::HashSet::new();
+    let mut seen: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
     for source in &manifest.sources {
         let root = PathBuf::from(&source.root);
         for entry in &source.files {
@@ -190,13 +180,7 @@ pub fn plan_manifest_update(ctx_path: &Path, with_content: bool) -> Result<WorkP
         plan.stats.files_seen += 1;
         let root_str = root.display().to_string();
 
-        match probe_index_file(
-            ctx_path,
-            &root_str,
-            &source_rel,
-            &abs,
-            with_content,
-        ) {
+        match probe_index_file(ctx_path, &root_str, &source_rel, &abs, with_content) {
             Ok(IndexFilePlan::SkipAlreadyIndexed) => {
                 plan.stats.skipped_already_indexed += 1;
             }

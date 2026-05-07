@@ -8,17 +8,27 @@ use crate::index_plan;
 use crate::{open_existing_context, update_context_with_verbosity};
 
 #[derive(Debug, Args)]
+#[command(about = "Re-index changed files and refresh notes")]
 pub struct UpdateArgs {
     #[command(flatten)]
     pub select: ContextSelectArgs,
+    /// Print file-by-file progress.
     #[arg(short = 'v', long = "verbose")]
     pub verbose: bool,
+    /// Run synchronously without prompts.
     #[arg(short = 'y', long = "yes", conflicts_with = "background")]
     pub yes: bool,
-    #[arg(long = "no-interactive", alias = "non-interactive", conflicts_with = "background")]
+    /// Same as `--yes`.
+    #[arg(
+        long = "no-interactive",
+        alias = "non-interactive",
+        conflicts_with = "background"
+    )]
     pub no_interactive: bool,
+    /// Detach a worker process (Unix only). Check progress with `ctx status`.
     #[arg(short = 'b', long = "background", conflicts_with = "yes")]
     pub background: bool,
+    /// Print the planned work and estimate, then exit.
     #[arg(long = "dry-run")]
     pub dry_run: bool,
 }
@@ -60,15 +70,20 @@ pub async fn run(args: UpdateArgs) -> Result<()> {
         {
             if plan.is_empty() {
                 let status = crate::finalize_update_context(&context, &ctx_path).await?;
-                println!("updated {} (index already current; notes refreshed)", status.name);
+                println!(
+                    "updated {} (index already current; notes refreshed)",
+                    status.name
+                );
                 return Ok(());
             }
-            index_job::start_background_index_job(
-                &context,
-                &plan,
-                IndexJobKind::Update,
-                true,
-            )?;
+            let job =
+                index_job::start_background_index_job(&context, &plan, IndexJobKind::Update, true)?;
+            println!(
+                "background indexing started (job {}, pid {})",
+                job.job_id, job.pid
+            );
+            println!("log: {}", job.log_path.display());
+            println!("progress: ctx status");
             return Ok(());
         }
     }
@@ -89,16 +104,24 @@ pub async fn run(args: UpdateArgs) -> Result<()> {
         IndexRunChoice::Background => {
             #[cfg(not(unix))]
             {
-                anyhow::bail!("background indexing requires Unix; use --yes for non-interactive sync");
+                anyhow::bail!(
+                    "background indexing requires Unix; use --yes for non-interactive sync"
+                );
             }
             #[cfg(unix)]
             {
-                index_job::start_background_index_job(
+                let job = index_job::start_background_index_job(
                     &context,
                     &plan,
                     IndexJobKind::Update,
                     true,
                 )?;
+                println!(
+                    "background indexing started (job {}, pid {})",
+                    job.job_id, job.pid
+                );
+                println!("log: {}", job.log_path.display());
+                println!("progress: ctx status");
                 Ok(())
             }
         }

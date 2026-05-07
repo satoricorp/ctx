@@ -55,7 +55,9 @@ fn complete_json_sync(prompt: &str) -> Result<String> {
         .strip_prefix("openai:")
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .ok_or_else(|| anyhow!("unsupported extraction_model {model}; only openai:* is supported"))?;
+        .ok_or_else(|| {
+            anyhow!("unsupported extraction_model {model}; only openai:* is supported")
+        })?;
     openai_chat_json(prompt, model_id)
 }
 

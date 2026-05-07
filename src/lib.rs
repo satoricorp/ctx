@@ -1,6 +1,5 @@
 pub mod api;
 pub mod artifact;
-pub mod notes_update;
 pub mod auth;
 pub mod cli;
 pub mod doctor;
@@ -11,6 +10,7 @@ pub mod index_plan;
 pub mod install;
 pub mod mcp;
 pub mod models;
+pub mod notes_update;
 pub mod retrieval;
 pub mod store;
 
@@ -1063,8 +1063,7 @@ pub(crate) fn probe_index_file(
     }
 
     if stream {
-        if already_fully_indexed_by_stat(ctx_path, root_str, &rel_str, source_stat, with_content)?
-        {
+        if already_fully_indexed_by_stat(ctx_path, root_str, &rel_str, source_stat, with_content)? {
             return Ok(IndexFilePlan::SkipAlreadyIndexed);
         }
     } else {
@@ -1753,8 +1752,12 @@ pub(crate) mod test_support {
     fn mock_chat_completion(body: &str) -> serde_json::Value {
         let request: serde_json::Value =
             serde_json::from_str(body).expect("mock openai chat request json");
-        let prompt = request["messages"][0]["content"].as_str().unwrap_or_default();
-        let content = if prompt.contains("\"task_description\"") {
+        let prompt = request["messages"][0]["content"]
+            .as_str()
+            .unwrap_or_default();
+        let content = if prompt.contains("\"citations\"") && prompt.contains("Retrieved results:") {
+            mock_query_answer_json(prompt)
+        } else if prompt.contains("\"task_description\"") {
             mock_procedural_json(prompt)
         } else {
             mock_semantic_json(prompt)
@@ -1767,6 +1770,22 @@ pub(crate) mod test_support {
                 }
             }]
         })
+    }
+
+    fn mock_query_answer_json(prompt: &str) -> String {
+        let answer = if prompt.to_ascii_lowercase().contains("rs256") {
+            "AuthService uses RS256."
+        } else if prompt.to_ascii_lowercase().contains("staging") {
+            "The retrieved results describe a staging deployment flow."
+        } else {
+            "The retrieved results contain a direct answer."
+        };
+
+        serde_json::json!({
+            "answer": answer,
+            "citations": [1],
+        })
+        .to_string()
     }
 
     fn mock_embeddings(body: &str) -> serde_json::Value {
@@ -1788,13 +1807,12 @@ pub(crate) mod test_support {
     }
 
     fn mock_semantic_json(prompt: &str) -> String {
-        let content = prompt.rsplit("\ncontent:\n").next().unwrap_or(prompt).trim();
-        let summary = content
-            .lines()
+        let content = prompt
+            .rsplit("\ncontent:\n")
             .next()
-            .unwrap_or(content)
-            .trim()
-            .to_string();
+            .unwrap_or(prompt)
+            .trim();
+        let summary = content.lines().next().unwrap_or(content).trim().to_string();
         let entities: Vec<String> = content
             .split(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_')
             .filter(|term| {
@@ -1823,7 +1841,11 @@ pub(crate) mod test_support {
     }
 
     fn mock_procedural_json(prompt: &str) -> String {
-        let content = prompt.rsplit("\ncontent:\n").next().unwrap_or(prompt).trim();
+        let content = prompt
+            .rsplit("\ncontent:\n")
+            .next()
+            .unwrap_or(prompt)
+            .trim();
         let steps: Vec<String> = content
             .lines()
             .filter_map(|line| {
@@ -2276,7 +2298,9 @@ mod tests {
         std::env::remove_var("OPENAI_API_KEY");
         std::env::remove_var("CTX_OPENAI_BASE_URL");
 
-        let error = init_context("missing-key").await.expect_err("missing api key");
+        let error = init_context("missing-key")
+            .await
+            .expect_err("missing api key");
         assert!(error.to_string().contains("OPENAI_API_KEY is required"));
 
         std::env::remove_var("CTX_PATH");

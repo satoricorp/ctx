@@ -11,10 +11,10 @@ use std::path::Path;
 use tokio::sync::mpsc;
 use walkdir::WalkDir;
 
-use crate::artifact::{notes_path, blobs_path, index_path, Manifest};
+use crate::artifact::{blobs_path, index_path, notes_path, Manifest};
 use crate::{
-    canonical_notes_path, drift_state, open_existing_context, rebuild_index, refresh_notes_registry,
-    verify_context, IntegrityStatus,
+    canonical_notes_path, drift_state, open_existing_context, rebuild_index,
+    refresh_notes_registry, verify_context, IntegrityStatus,
 };
 
 /// Ordered reporting tier. All tiers run concurrently; ordering is purely for
@@ -135,7 +135,9 @@ pub async fn run_doctor(
 
     // Tier 1 — instant.
     let p = ctx_path.clone();
-    handles.push(tokio::task::spawn_blocking(move || check_manifest_schema(&p)));
+    handles.push(tokio::task::spawn_blocking(move || {
+        check_manifest_schema(&p)
+    }));
     let p = ctx_path.clone();
     handles.push(tokio::task::spawn_blocking(move || check_config_sanity(&p)));
     let p = ctx_path.clone();
@@ -143,9 +145,13 @@ pub async fn run_doctor(
         check_notes_missing_files(&p)
     }));
     let p = ctx_path.clone();
-    handles.push(tokio::task::spawn_blocking(move || check_notes_unregistered(&p)));
+    handles.push(tokio::task::spawn_blocking(move || {
+        check_notes_unregistered(&p)
+    }));
     let p = ctx_path.clone();
-    handles.push(tokio::task::spawn_blocking(move || check_index_presence(&p)));
+    handles.push(tokio::task::spawn_blocking(move || {
+        check_index_presence(&p)
+    }));
 
     // Tier 2 — medium.
     let p = ctx_path.clone();
@@ -213,7 +219,10 @@ fn finalize(context: String, mut reports: Vec<CheckReport>) -> DoctorReport {
         Tier::Medium => 1,
         Tier::Heavy => 2,
     });
-    let ok = reports.iter().filter(|r| r.status == CheckStatus::Ok).count();
+    let ok = reports
+        .iter()
+        .filter(|r| r.status == CheckStatus::Ok)
+        .count();
     let warn = reports
         .iter()
         .filter(|r| r.status == CheckStatus::Warn)
@@ -262,7 +271,11 @@ fn check_config_sanity(ctx_path: &Path) -> (CheckReport, Option<FixAction>) {
         Ok(m) => m,
         Err(err) => {
             return (
-                CheckReport::fail(NAME, Tier::Instant, format!("manifest load failed: {err:#}")),
+                CheckReport::fail(
+                    NAME,
+                    Tier::Instant,
+                    format!("manifest load failed: {err:#}"),
+                ),
                 None,
             )
         }
@@ -300,7 +313,11 @@ fn check_notes_missing_files(ctx_path: &Path) -> (CheckReport, Option<FixAction>
         Ok(m) => m,
         Err(err) => {
             return (
-                CheckReport::fail(NAME, Tier::Instant, format!("manifest load failed: {err:#}")),
+                CheckReport::fail(
+                    NAME,
+                    Tier::Instant,
+                    format!("manifest load failed: {err:#}"),
+                ),
                 None,
             )
         }
@@ -333,7 +350,11 @@ fn check_notes_unregistered(ctx_path: &Path) -> (CheckReport, Option<FixAction>)
         Ok(m) => m,
         Err(err) => {
             return (
-                CheckReport::fail(NAME, Tier::Instant, format!("manifest load failed: {err:#}")),
+                CheckReport::fail(
+                    NAME,
+                    Tier::Instant,
+                    format!("manifest load failed: {err:#}"),
+                ),
                 None,
             )
         }
@@ -392,16 +413,11 @@ fn check_notes_unregistered(ctx_path: &Path) -> (CheckReport, Option<FixAction>)
         parts.push(format!("{} unregistered file(s)", unregistered.len()));
     }
     if !stray_roots.is_empty() {
-        parts.push(format!(
-            "{} root-level note(s)",
-            stray_roots.len()
-        ));
+        parts.push(format!("{} root-level note(s)", stray_roots.len()));
     }
 
     let action = if !stray_roots.is_empty() {
-        FixAction::RelocateRootTopics {
-            paths: stray_roots,
-        }
+        FixAction::RelocateRootTopics { paths: stray_roots }
     } else {
         FixAction::RegisterNoteFiles
     };
@@ -546,7 +562,10 @@ fn apply_fix(
         FixAction::RemoveNoteEntries { paths } => {
             let mut manifest = Manifest::load(ctx_path)?;
             let before = manifest.notes.files.len();
-            manifest.notes.files.retain(|entry| !paths.contains(&entry.path));
+            manifest
+                .notes
+                .files
+                .retain(|entry| !paths.contains(&entry.path));
             if manifest.notes.files.len() != before {
                 manifest.save(ctx_path)?;
             }
@@ -733,12 +752,15 @@ mod tests {
         let ctx_path = open_existing_context("doc-missing-notes").expect("open");
 
         let mut manifest = Manifest::load(&ctx_path).expect("load");
-        manifest.notes.files.push(crate::artifact::manifest::NoteFile {
-            path: "notes/topics/ghost.md".into(),
-            hash: "sha256:000".into(),
-            updated_at: chrono::Utc::now(),
-            extra: Default::default(),
-        });
+        manifest
+            .notes
+            .files
+            .push(crate::artifact::manifest::NoteFile {
+                path: "notes/topics/ghost.md".into(),
+                hash: "sha256:000".into(),
+                updated_at: chrono::Utc::now(),
+                extra: Default::default(),
+            });
         manifest.save(&ctx_path).expect("save");
 
         let before = run_collect("doc-missing-notes", false).await;
@@ -751,7 +773,11 @@ mod tests {
         let r = report_for(&after, "notes_registry_missing");
         assert!(r.fixes_applied.iter().any(|s| s.contains("ghost")));
         let m = Manifest::load(&ctx_path).expect("reload");
-        assert!(m.notes.files.iter().all(|e| e.path != "notes/topics/ghost.md"));
+        assert!(m
+            .notes
+            .files
+            .iter()
+            .all(|e| e.path != "notes/topics/ghost.md"));
     }
 
     #[tokio::test]
@@ -778,7 +804,10 @@ mod tests {
             "topic should be relocated under notes/topics/"
         );
         let r = report_for(&after, "notes_registry_unregistered");
-        assert!(r.fixes_applied.iter().any(|s| s.contains("notes/stray.md -> notes/topics/stray.md")));
+        assert!(r
+            .fixes_applied
+            .iter()
+            .any(|s| s.contains("notes/stray.md -> notes/topics/stray.md")));
     }
 
     #[tokio::test]
@@ -826,9 +855,7 @@ mod tests {
             }
             names
         });
-        let report = run_doctor("doc-concurrency", false, tx)
-            .await
-            .expect("run");
+        let report = run_doctor("doc-concurrency", false, tx).await.expect("run");
         let names = streamed.await.expect("drain");
 
         // Every check name appears at least once in the stream.

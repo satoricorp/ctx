@@ -124,7 +124,9 @@ impl Decoder for PdfDecoder {
         let pages = match extract {
             Ok(Ok(pages)) => pages,
             Ok(Err(err)) => {
-                return Err(anyhow!("pdf text extraction failed for {path_display}: {err}"));
+                return Err(anyhow!(
+                    "pdf text extraction failed for {path_display}: {err}"
+                ));
             }
             Err(payload) => {
                 return Err(anyhow!(

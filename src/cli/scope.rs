@@ -3,10 +3,15 @@ use clap::Args;
 
 use crate::artifact::{context_path, infer_context_name};
 
-/// Flags shared by commands that resolve a named context under [`crate::artifact::context_path`].
 #[derive(Debug, Args)]
 pub struct ContextSelectArgs {
-    #[arg(short = 'c', long = "context")]
+    /// Context name. Defaults to the active context or current directory when possible.
+    #[arg(
+        short = 'c',
+        long = "context",
+        value_name = "name",
+        help_heading = "Context"
+    )]
     pub context: Option<String>,
 }
 

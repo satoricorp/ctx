@@ -15,7 +15,10 @@ pub const MANIFEST_VERSION: &str = "0.2";
 fn migrate_legacy_manifest_map(map: &mut Map<String, Value>) -> Result<()> {
     if !map.contains_key("version") {
         if map.remove("ctx_version").is_some() {
-            map.insert("version".to_string(), Value::String(MANIFEST_VERSION.into()));
+            map.insert(
+                "version".to_string(),
+                Value::String(MANIFEST_VERSION.into()),
+            );
         }
     }
     if !map.contains_key("created_at") {
@@ -26,7 +29,10 @@ fn migrate_legacy_manifest_map(map: &mut Map<String, Value>) -> Result<()> {
     }
     if !map.contains_key("sources") {
         if let Some(entries) = map.remove("entries") {
-            map.insert("sources".to_string(), legacy_entries_to_sources(entries, map)?);
+            map.insert(
+                "sources".to_string(),
+                legacy_entries_to_sources(entries, map)?,
+            );
         }
     }
     if !map.contains_key("notes") {
@@ -49,7 +55,9 @@ fn legacy_entries_to_sources(entries: Value, map: &Map<String, Value>) -> Result
         .or_else(|| map.get("updated_at"))
         .cloned()
         .ok_or_else(|| {
-            anyhow::anyhow!("legacy manifest needs `created`/`created_at` to migrate non-empty `entries`")
+            anyhow::anyhow!(
+                "legacy manifest needs `created`/`created_at` to migrate non-empty `entries`"
+            )
         })?;
     let mut files = Vec::with_capacity(list.len());
     for item in list {
@@ -264,10 +272,11 @@ impl Manifest {
         let mut value: Value =
             serde_json::from_slice(&bytes).with_context(|| format!("parse {}", path.display()))?;
         if let Value::Object(ref mut map) = value {
-            migrate_legacy_manifest_map(map).with_context(|| format!("migrate {}", path.display()))?;
+            migrate_legacy_manifest_map(map)
+                .with_context(|| format!("migrate {}", path.display()))?;
         }
-        let manifest: Manifest = serde_json::from_value(value)
-            .with_context(|| format!("parse {}", path.display()))?;
+        let manifest: Manifest =
+            serde_json::from_value(value).with_context(|| format!("parse {}", path.display()))?;
 
         if manifest.version != MANIFEST_VERSION {
             anyhow::bail!(
@@ -637,5 +646,4 @@ mod tests {
         );
         assert!(f.extra.contains_key("id"));
     }
-
 }

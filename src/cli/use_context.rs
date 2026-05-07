@@ -2,6 +2,7 @@ use anyhow::Result;
 use clap::Args;
 
 #[derive(Debug, Args)]
+#[command(about = "Set the default context")]
 pub struct UseArgs {
     #[arg(value_name = "context")]
     pub context: String,

@@ -5,6 +5,7 @@ use crate::artifact::notes_path;
 use crate::cli::scope::{resolve_context_name, ContextSelectArgs};
 
 #[derive(Debug, Args)]
+#[command(about = "Open the current context's notes directory")]
 pub struct NotesArgs {
     #[command(flatten)]
     pub select: ContextSelectArgs,

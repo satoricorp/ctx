@@ -13,7 +13,9 @@ use uuid::Uuid;
 use crate::artifact::run_path;
 use crate::index_plan::{self, WorkItem, WorkPlan};
 use crate::store::schema::{ContextStatus, IngestionSummary};
-use crate::{finalize_update_context, ingest_source_from_path, open_existing_context, IngestOutcomeKind};
+use crate::{
+    finalize_update_context, ingest_source_from_path, open_existing_context, IngestOutcomeKind,
+};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -26,6 +28,13 @@ pub enum IndexJobKind {
 pub struct SyncRunOutcome {
     pub ingestion: IngestionSummary,
     pub context_status: Option<ContextStatus>,
+}
+
+#[derive(Debug, Clone)]
+pub struct BackgroundJobLaunch {
+    pub job_id: String,
+    pub pid: u32,
+    pub log_path: PathBuf,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -106,7 +115,9 @@ pub fn read_active_job(ctx_path: &Path) -> Result<Option<IndexJobState>> {
         return Ok(None);
     }
     let text = fs::read_to_string(&p).context("read active.json")?;
-    Ok(Some(serde_json::from_str(&text).context("parse active.json")?))
+    Ok(Some(
+        serde_json::from_str(&text).context("parse active.json")?,
+    ))
 }
 
 /// True when another worker appears to hold this context's job slot.
@@ -165,9 +176,7 @@ pub fn acquire_run_lock(ctx_path: &Path) -> Result<RunLock> {
         .write(true)
         .open(&lock)
         .map_err(|e| {
-            anyhow::anyhow!(
-                "failed to create run/lock (another indexing job may be starting): {e}"
-            )
+            anyhow::anyhow!("failed to create run/lock (another indexing job may be starting): {e}")
         })?;
     writeln!(f, "{}", std::process::id())?;
     Ok(RunLock { path: lock })
@@ -212,7 +221,7 @@ pub fn start_background_index_job(
     plan: &WorkPlan,
     kind: IndexJobKind,
     with_finalize_update: bool,
-) -> Result<()> {
+) -> Result<BackgroundJobLaunch> {
     if plan.items.is_empty() {
         bail!("nothing to index in background");
     }
@@ -266,10 +275,34 @@ pub fn start_background_index_job(
     atomic_write_json(&job_path, &state)?;
     atomic_write_json(&active_job_path(&ctx_path), &state)?;
 
-    println!("background indexing started (job {job_id}, pid {pid})");
-    println!("log: {}", log_path.display());
-    println!("progress: ctx status");
-    Ok(())
+    Ok(BackgroundJobLaunch {
+        job_id,
+        pid,
+        log_path,
+    })
+}
+
+pub fn resume_background_index_job(ctx_path: &Path) -> Result<Option<BackgroundJobLaunch>> {
+    let Some(mut job) = read_active_job(ctx_path)? else {
+        return Ok(None);
+    };
+    if !job_is_resumable(&job) {
+        return Ok(None);
+    }
+    let Some(job_path) = job_state_path(ctx_path, &job) else {
+        return Ok(None);
+    };
+    let pid = spawn_index_worker(ctx_path, &job_path, &job.log_path)?;
+    job.pid = pid;
+    job.phase = "running".into();
+    job.last_error = None;
+    atomic_write_json(&job_path, &job)?;
+    atomic_write_json(&active_job_path(ctx_path), &job)?;
+    Ok(Some(BackgroundJobLaunch {
+        job_id: job.job_id,
+        pid,
+        log_path: job.log_path,
+    }))
 }
 
 /// If `active.json` describes an interrupted job, run it to completion. Returns `true` when a job
@@ -400,7 +433,10 @@ pub async fn execute_index_job_file(job_path: &Path) -> Result<()> {
             atomic_write_json(job_path, &state)?;
             atomic_write_json(&active_job_path(&ctx_path), &state)?;
             writeln!(&mut log_append, "{}", summary.format_oneline())?;
-            bail!("{}", state.last_error.as_deref().unwrap_or("finalize failed"));
+            bail!(
+                "{}",
+                state.last_error.as_deref().unwrap_or("finalize failed")
+            );
         }
     }
 
