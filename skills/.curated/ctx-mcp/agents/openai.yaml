@@ -1,0 +1,4 @@
+interface:
+  display_name: "CTX MCP"
+  short_description: "Set up ctx MCP for local agent tooling."
+  default_prompt: "Use $ctx-mcp to set up and verify the ctx MCP server for local clients like Claude Desktop or Codex."

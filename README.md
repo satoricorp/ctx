@@ -50,6 +50,24 @@ export OPENAI_API_KEY=your_key_here
 
 After that, use `ctx` directly from your shell.
 
+## Install Skills
+
+For Codex-style runtimes, this repo also ships installable skills under `skills/.curated`.
+
+Install the CLI skill:
+
+```bash
+npx skills add https://github.com/satoricorp/ctx --skill ctx-cli -g -y
+```
+
+Install the MCP setup skill:
+
+```bash
+npx skills add https://github.com/satoricorp/ctx --skill ctx-mcp -g -y
+```
+
+After installing a skill, restart Codex so it picks up the new package.
+
 ## Quick Start
 
 Create a context:
