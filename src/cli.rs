@@ -25,9 +25,14 @@ const CLI_STYLES: Styles = Styles::styled()
     .literal(AnsiColor::Cyan.on_default().bold())
     .placeholder(AnsiColor::Green.on_default());
 
+const CTX_BANNER: &str = "\x1b[1;36m ██████╗████████╗██╗  ██╗\n██╔════╝╚══██╔══╝╚██╗██╔╝\n██║        ██║    ╚███╔╝\n██║        ██║    ██╔██╗\n╚██████╗   ██║   ██╔╝ ██╗\n ╚═════╝   ╚═╝   ╚═╝  ╚═╝\x1b[0m\n\x1b[33mlocal-first context runtime for agents\x1b[0m";
+const CLI_HELP_TEMPLATE: &str = "{before-help}\n{usage-heading} {usage}\n\n{all-args}";
+
 #[derive(Debug, Parser)]
 #[command(name = "ctx")]
 #[command(about = "local-first context runtime for agents")]
+#[command(before_help = CTX_BANNER)]
+#[command(help_template = CLI_HELP_TEMPLATE)]
 #[command(styles = CLI_STYLES)]
 pub struct Cli {
     #[command(subcommand)]

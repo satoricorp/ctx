@@ -1,4 +1,13 @@
-# ctx
+```text
+ ██████╗████████╗██╗  ██╗
+██╔════╝╚══██╔══╝╚██╗██╔╝
+██║        ██║    ╚███╔╝
+██║        ██║    ██╔██╗
+╚██████╗   ██║   ██╔╝ ██╗
+ ╚═════╝   ╚═╝   ╚═╝  ╚═╝
+```
+
+local-first context runtime for agents
 
 `ctx` is a local context runtime for AI agents.
 
