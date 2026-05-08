@@ -27,9 +27,8 @@ export function Nav() {
         <Link
           href="/"
           aria-label="ctx home"
-          className={`${blobLogo.className} text-foreground text-xl leading-none font-medium transition-opacity duration-200 ${
-            scrolled ? "opacity-100" : "pointer-events-none opacity-0"
-          }`}
+          className={`${blobLogo.className} text-foreground text-xl leading-none font-medium transition-opacity duration-200 ${scrolled ? "opacity-100" : "pointer-events-none opacity-0"
+            }`}
         >
           ctx
         </Link>
@@ -38,21 +37,22 @@ export function Nav() {
           className={`${berkeleyMono.className} [&_[data-slot=navigation-menu-link]]:text-xs [&_[data-slot=navigation-menu-trigger]]:h-8 [&_[data-slot=navigation-menu-trigger]]:px-2 [&_[data-slot=navigation-menu-trigger]]:py-1 [&_[data-slot=navigation-menu-trigger]]:text-xs`}
         >
           <NavigationMenuList>
+
             <NavigationMenuItem>
-              <NavigationMenuLink render={<Link href="/getting-started" />}>
-                Getting Started
+              <NavigationMenuLink render={<Link href="/#install" />}>
+                Install
               </NavigationMenuLink>
             </NavigationMenuItem>
 
             <NavigationMenuItem>
-              <NavigationMenuLink render={<Link href="/how-it-works" />}>
-                How It Works
+              <NavigationMenuLink render={<Link href="/#use" />}>
+                Use
               </NavigationMenuLink>
             </NavigationMenuItem>
 
             <NavigationMenuItem>
-              <NavigationMenuLink render={<Link href="/docs" />}>
-                Docs
+              <NavigationMenuLink render={<Link href="/#benefits" />}>
+                Benefits
               </NavigationMenuLink>
             </NavigationMenuItem>
 
@@ -65,6 +65,13 @@ export function Nav() {
                 Spec
               </NavigationMenuLink>
             </NavigationMenuItem>
+
+            <NavigationMenuItem>
+              <NavigationMenuLink render={<Link href="/#contribute" />}>
+                Contribute
+              </NavigationMenuLink>
+            </NavigationMenuItem>
+
           </NavigationMenuList>
         </NavigationMenu>
       </div>

@@ -230,6 +230,8 @@ pub struct NotesRegistry {
 pub struct Manifest {
     pub version: String,
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub config: ManifestConfig,
@@ -248,6 +250,7 @@ impl Manifest {
         Self {
             version: MANIFEST_VERSION.into(),
             name: name.into(),
+            description: None,
             created_at: now,
             updated_at: now,
             config: ManifestConfig::default(),

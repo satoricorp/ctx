@@ -64,6 +64,7 @@ pub async fn run(args: StatusArgs) -> Result<()> {
 
 struct StatusSummary {
     name: String,
+    description: Option<String>,
     indexed_count: usize,
     extraction_model: String,
     active_job: Option<index_job::IndexJobState>,
@@ -82,6 +83,7 @@ fn load_status_summary(context: &str) -> Result<StatusSummary> {
 
     Ok(StatusSummary {
         name: manifest.name,
+        description: manifest.description,
         indexed_count,
         extraction_model: manifest.config.extraction_model,
         active_job,
@@ -101,6 +103,11 @@ fn print_one_context_status(status: &StatusSummary, default_ctx: Option<&str>) -
         status.indexed_count,
         default_suffix,
     );
+    if let Some(description) = status.description.as_deref().map(str::trim) {
+        if !description.is_empty() {
+            println!("{COLOR_LABEL}{description}{COLOR_RESET}");
+        }
+    }
     println!(
         "{COLOR_LABEL}model:{COLOR_RESET}{COLOR_MODEL}{}{COLOR_RESET}",
         status.extraction_model

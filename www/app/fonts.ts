@@ -8,4 +8,5 @@ export const blobLogo = localFont({
 export const berkeleyMono = localFont({
   src: "../public/fonts/BerkeleyMonoVariable.otf",
   display: "swap",
+  variable: "--font-berkeley-mono",
 });

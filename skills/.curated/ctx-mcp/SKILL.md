@@ -16,6 +16,7 @@ Prefer this skill for:
 - producing client configuration for local MCP consumers
 - troubleshooting local `ctx` MCP setup
 - explaining when to use MCP instead of the plain CLI
+- wiring a client into a shared local memory context
 
 ## Preconditions
 
@@ -72,6 +73,8 @@ Expect tools like:
 - `ctx_notes_read`
 - `ctx_notes_write`
 
+Use `ctx_notes_write` and `ctx_record` when the client should leave behind durable memory instead of keeping everything trapped in chat history.
+
 ## Client Setup Guidance
 
 When the user asks for Claude Desktop or another MCP client, provide configuration in terms of:
@@ -94,6 +97,7 @@ Prefer MCP over the plain CLI when:
 - another agent runtime needs `ctx` as callable tools
 - the user wants `ctx_add`, `ctx_query`, or `ctx_notes_*` available inside a client
 - the workflow should stay inside an MCP-capable tool instead of shell commands
+- multiple agents should share one local memory layer on disk
 
 Prefer the CLI skill when the task is simply to run `ctx` commands directly.
 

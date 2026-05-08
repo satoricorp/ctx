@@ -65,6 +65,7 @@ pub struct IndexCounts {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ContextListing {
     pub name: String,
+    pub description: Option<String>,
     pub counts: IndexCounts,
     pub updated_at: Option<DateTime<Utc>>,
 }
@@ -72,6 +73,7 @@ pub struct ContextListing {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ContextStatus {
     pub name: String,
+    pub description: Option<String>,
     pub indexed_count: usize,
     pub dirty_count: usize,
     pub pending_count: usize,

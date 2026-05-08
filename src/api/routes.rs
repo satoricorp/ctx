@@ -79,6 +79,8 @@ pub struct StatusResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub indexed_count: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dirty_count: Option<usize>,
@@ -185,6 +187,7 @@ pub async fn status_handler(
         return Ok(Json(StatusResponse {
             status: String::from("ok"),
             context: Some(status.name),
+            description: status.description,
             indexed_count: Some(status.indexed_count),
             dirty_count: Some(status.dirty_count),
             pending_count: Some(status.pending_count),
@@ -202,6 +205,7 @@ pub async fn status_handler(
     Ok(Json(StatusResponse {
         status: String::from("ok"),
         context: None,
+        description: None,
         indexed_count: None,
         dirty_count: None,
         pending_count: None,

@@ -4,7 +4,7 @@ Draft white paper for review
 
 ## Abstract
 
-AI agents increasingly need persistent context that survives across sessions, tools, and environments. Existing approaches either hide state inside opaque memory services or rely on informal files that are easy to create but hard to standardize. CTX addresses this gap with a portable context container specification. A CTX artifact is a directory-based container composed of a manifest, structured retrieval indices, a human-readable notes layer, and optional raw-content blobs. The design keeps context locally inspectable while making it possible to publish or query a remote instance through a registry-backed distribution profile. We argue that portability is valuable not because context is merely stored somewhere else, but because the artifact itself remains legible, versioned, and interoperable across implementations. In this paper, efficacy is supporting evidence: CTX works because the structure makes persistent context easier to inspect, update, and reuse.
+AI agents increasingly need persistent context that survives across sessions, tools, and environments. Existing approaches either hide state inside opaque memory services or rely on informal files that are easy to create but hard to standardize. CTX addresses this gap with a portable context container specification. A CTX artifact is a directory-based container composed of a manifest, structured retrieval indices, a human-readable notes layer, and optional raw-content blobs. The design keeps context locally inspectable while allowing multiple tools to use the same memory surface through local interfaces such as CLI, API, MCP, or skills. We argue that portability is valuable because the artifact itself remains legible, versioned, and interoperable across implementations. In this paper, efficacy is supporting evidence: CTX works because the structure makes persistent context easier to inspect, update, and reuse.
 
 ## 1. Introduction (main text)
 
@@ -22,9 +22,9 @@ First, it defines CTX as an artifact-centric model for portable context rather t
 
 Second, it specifies the major components of the artifact: manifest, indices, notes, and optional blobs.
 
-Third, it separates the core artifact format from the distribution profile so remote publication and remote query can evolve independently of the on-disk structure.
+Third, it treats the notes layer as the durable human-facing memory surface rather than an implementation detail.
 
-Fourth, it grounds the proposal in a reference implementation that already exposes context through local and remote interfaces, while keeping the specification itself implementation-neutral.
+Fourth, it grounds the proposal in a reference implementation that already exposes context through local interfaces such as CLI, API, MCP, and installable skills, while keeping the specification itself implementation-neutral.
 
 ## 3. Background and related work (main text)
 
@@ -48,7 +48,7 @@ That separation is the point. It allows context to be both machine-useful and hu
 
 ## 5. CTX artifact model (main text)
 
-A CTX artifact is a directory named `<name>.ctx`. The artifact is the unit of portability. It can live only on a local machine, or it can be published to a remote registry-backed instance. The artifact format itself does not require a particular CLI, server, or cloud vendor.
+A CTX artifact is a directory named `<name>.ctx`. The artifact is the unit of portability. It is designed to live locally on a machine and remain usable across tools without requiring a hosted memory backend.
 
 At minimum, a CTX artifact contains:
 
@@ -88,15 +88,13 @@ Blobs are optional. That is an important part of the design.
 
 A CTX artifact does not need to store all raw source content in order to be useful. In many cases, hashes, summaries, extracted records, and notes entries are enough. When raw content is needed, it can be stored under the artifact as a content-addressed blob.
 
-## 6. Distribution profile (main text)
+## 6. Local interfaces and shared memory (main text)
 
-Distribution is separated from the artifact format itself.
+CTX is not only a file format. It is a shared local memory surface.
 
-A CTX artifact may be published to a registry-backed remote instance. In that model, local and remote copies are instances of the same artifact state rather than entirely different formats. The registry is an abstraction: it could be implemented by an HTTP API, object storage, or another addressable backend.
+The same artifact can be used through a CLI, an HTTP API, an MCP server, or a skill package loaded into an agent runtime. That matters because the practical goal is not simply to store context somewhere. The goal is to let multiple tools accumulate and consult the same durable memory without hiding it behind one vendor's backend.
 
-The important semantics are simple. Publish writes the current local state to a remote instance. Fetch retrieves the remote instance. Query may target the local artifact or the remote instance. If the local artifact drifts from the remote one, republishing updates the remote state. For the first version of this idea, the simplest policy is enough: last write wins at the artifact level, and more complex merging is future work.
-
-This model is intentionally modest. It avoids peer-to-peer synchronization and complicated conflict resolution. The goal is to make remote publication and remote query possible without making distribution the centerpiece of the standard.
+In that model, notes and procedural records become the long-term layer that survives beyond a single chat. One tool may add source material, another may query it, and another may write durable notes or procedure outcomes. The artifact remains the same.
 
 ## 7. Why this should work (main text)
 
@@ -108,7 +106,7 @@ The system should work because it makes the hard parts explicit:
 - what is derived
 - what is human-editable
 - what is hash-verified
-- what is local-only versus remotely published
+- what remains in human-readable notes versus derived indices
 - how drift is detected
 - how context is accumulated over time
 
@@ -120,13 +118,13 @@ Supportive evidence for the design comes from the architecture itself: the repos
 
 Several interesting problems are intentionally out of scope for this draft.
 
-First, peer-to-peer distribution is not part of the current design. Second, advanced conflict resolution is not defined beyond a simple artifact-level overwrite model for registry publication. Third, backend standardization is avoided so that the format can outlive any one storage provider. Fourth, benchmark-heavy evaluation is left for later work.
+First, remote publication and synchronization are not part of the current design. Second, advanced merge semantics across concurrent writers are not defined. Third, backend standardization is avoided so that the format can outlive any one storage provider. Fourth, benchmark-heavy evaluation is left for later work.
 
-Those omissions are deliberate. The purpose of this paper is to define the artifact and the core distribution profile clearly enough that implementation and experimentation can proceed without ambiguity.
+Those omissions are deliberate. The purpose of this paper is to define the artifact and the local shared-memory model clearly enough that implementation and experimentation can proceed without ambiguity.
 
 ## 9. Conclusion (main text)
 
-CTX proposes that context for AI agents should be treated as a portable artifact rather than a hidden service. By combining a manifest, structured indices, a human-readable notes layer, optional blobs, and a separate distribution profile, CTX provides a concrete format for persistent context that is inspectable, local-first, and interoperable.
+CTX proposes that context for AI agents should be treated as a portable artifact rather than a hidden service. By combining a manifest, structured indices, a human-readable notes layer, optional blobs, and a set of local interfaces, CTX provides a concrete format for persistent context that is inspectable, local-first, and interoperable.
 
 The main contribution is the specification itself. If the artifact can be standardized, then the ecosystem around it can evolve independently. That is the practical promise of CTX: portable context, not portable lock-in.
 
@@ -170,7 +168,6 @@ example.ctx/
 
 ## Appendix C. Implementation notes (appendix)
 
-- This draft is intentionally compatible with the current CTX architecture while leaving room for future registry and sync work.
+- This draft is intentionally compatible with the current CTX architecture while keeping the product local-first.
 - The current reference implementation exposes a CLI, HTTP API, and MCP server, but the artifact spec MUST remain independent of those surfaces.
 - The current codebase already models manifest metadata, source entries, notes registry entries, semantic and procedural indexes, and drift-sensitive updates.
-- Publish and pull are treated here as a separate profile because they are not yet implemented in the reference CLI.

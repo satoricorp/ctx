@@ -47,14 +47,21 @@ use store::schema::{
 const BOOTSTRAP_FILES: &[&str] = &["AGENTS.md", "CLAUDE.md", "CONTEXT.md"];
 
 pub async fn init_context(name: &str) -> Result<ContextStatus> {
+    init_context_with_description(name, None).await
+}
+
+pub async fn init_context_with_description(
+    name: &str,
+    description: Option<&str>,
+) -> Result<ContextStatus> {
     ensure_local_setup()?;
-    prepare_context_layout(name)?;
+    prepare_context_layout(name, description)?;
     bootstrap_procedural(name).await?;
     context_status(name)
 }
 
 /// Creates the context directory, manifest, and Helix env. Shared by **`init`** and first-**`add`**.
-fn prepare_context_layout(name: &str) -> Result<PathBuf> {
+fn prepare_context_layout(name: &str, description: Option<&str>) -> Result<PathBuf> {
     ensure_base_dirs()?;
     seed_default_config()?;
 
@@ -70,6 +77,9 @@ fn prepare_context_layout(name: &str) -> Result<PathBuf> {
         Manifest::empty(name)
     };
     manifest.name = name.to_string();
+    if let Some(description) = normalize_context_description(description) {
+        manifest.description = Some(description);
+    }
     sync_manifest_config(&mut manifest)?;
     refresh_notes_registry(&ctx_path, &mut manifest)?;
     manifest.save(&ctx_path)?;
@@ -77,6 +87,13 @@ fn prepare_context_layout(name: &str) -> Result<PathBuf> {
     get_or_open_env(&index_path(&ctx_path))?;
     set_default_context_if_unset(name)?;
     Ok(ctx_path)
+}
+
+fn normalize_context_description(description: Option<&str>) -> Option<String> {
+    description
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
 }
 
 const NOTES_INDEX_SEED: &str = "# Notes Index\n\nAgent-maintained hub for the notes directory. \
@@ -378,6 +395,7 @@ pub fn list_contexts() -> Result<Vec<ContextListing>> {
 
         contexts.push(ContextListing {
             name: manifest.name,
+            description: manifest.description,
             counts: state.counts(),
             updated_at,
         });
@@ -443,6 +461,7 @@ pub fn context_status(context: &str) -> Result<ContextStatus> {
 
     Ok(ContextStatus {
         name: manifest.name,
+        description: manifest.description,
         indexed_count,
         dirty_count,
         pending_count,
@@ -876,7 +895,7 @@ pub fn ensure_context_for_add(context: &str) -> Result<PathBuf> {
     if ctx_path.exists() {
         return Ok(ctx_path);
     }
-    prepare_context_layout(context)?;
+    prepare_context_layout(context, None)?;
     eprintln!("created context {}", context);
     Ok(ctx_path)
 }
@@ -2307,6 +2326,25 @@ mod tests {
         std::env::remove_var("HOME");
         restore_optional_env("OPENAI_API_KEY", saved_openai.as_deref());
         restore_optional_env("CTX_OPENAI_BASE_URL", saved_openai_base.as_deref());
+    }
+
+    #[tokio::test]
+    async fn init_context_persists_description() {
+        let _guard = crate::test_support::env_lock()
+            .lock()
+            .expect("test lock poisoned");
+        let _env = setup_notes_env();
+
+        init_context_with_description("described", Some("Shared memory across agents"))
+            .await
+            .expect("init context");
+
+        let ctx_path = open_existing_context("described").expect("open context");
+        let manifest = Manifest::load(&ctx_path).expect("load manifest");
+        assert_eq!(
+            manifest.description.as_deref(),
+            Some("Shared memory across agents")
+        );
     }
 
     #[tokio::test]

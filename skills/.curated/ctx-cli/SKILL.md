@@ -14,9 +14,10 @@ Prefer this skill for:
 - creating or selecting a context
 - indexing a repo or local docs
 - querying indexed material
+- writing durable notes that should survive beyond one chat
 - checking job status or health
 - opening the context's `notes/` directory
-- starting `ctx mcp` for agent tooling
+- starting `ctx mcp` for agent runtimes
 
 ## Preconditions
 
@@ -87,6 +88,14 @@ ctx notes
 ctx notes -c demo
 ```
 
+Write durable memory into notes when a fact or decision should survive:
+
+- project decisions
+- working agreements
+- repeated fixes
+- user preferences
+- next-step reminders that matter beyond the current turn
+
 ## Context Selection
 
 Prefer these rules:
@@ -111,7 +120,7 @@ Start the local MCP server with:
 ctx mcp --port 8788
 ```
 
-Use this when the user wants `ctx` available as tools to another agent runtime or MCP client.
+Use this when the user wants `ctx` available to another agent runtime or MCP client.
 
 ## Working Rules
 
@@ -120,3 +129,4 @@ Use this when the user wants `ctx` available as tools to another agent runtime o
 - If the repo changed since the last index, suggest or run `ctx update` before answering important questions.
 - When a command needs a specific context and there is no clear default, pass `-c <name>` explicitly.
 - Use `ctx notes` instead of telling the user to browse `~/.ctx/...` by hand.
+- Treat `notes/` as the long-term memory layer. If a conclusion should survive the session, write it there instead of leaving it only in the chat transcript.

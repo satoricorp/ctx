@@ -3,7 +3,7 @@
 Status: Draft
 Version: 0.2
 
-This document specifies the CTX artifact format and an optional registry-backed distribution profile for AI agent context. It is written as a working draft for review and editing. The core artifact specification is intended to be implementation-neutral. The distribution section is intentionally separated so the artifact format does not depend on any particular CLI or backend.
+This document specifies the CTX artifact format for local AI agent context. It is written as a working draft for review and editing. The artifact specification is intended to be implementation-neutral and local-first.
 
 Normative keywords such as MUST, MUST NOT, SHOULD, and MAY are to be interpreted as described in RFC 2119 and RFC 8174.
 
@@ -22,7 +22,7 @@ Current AI agent workflows typically rely on one of two extremes:
 - opaque memory services that hide structure from the user, or
 - informal file-based conventions that are easy to create but hard to standardize.
 
-The first makes context hard to inspect and portability difficult. The second makes context easy to edit but difficult to exchange reliably between tools. CTX addresses this gap by defining a stable artifact structure and a separate distribution profile.
+The first makes context hard to inspect and portability difficult. The second makes context easy to edit but difficult to exchange reliably between tools. CTX addresses this gap by defining a stable artifact structure that multiple tools can read and write locally.
 
 ### 1.3 Scope
 
@@ -35,14 +35,14 @@ This specification defines:
 - the notes layer
 - the semantic and procedural index model
 - lifecycle and drift handling
-- an optional registry-backed distribution profile
+- local interoperability surfaces such as CLI, API, and MCP
 
 This specification does not require:
 
 - a particular CLI
 - a particular cloud vendor
 - a particular embedding model
-- peer-to-peer distribution
+- remote publication
 - benchmark claims
 - a specific storage engine for internal indexes
 
@@ -89,17 +89,9 @@ A blob is optional raw content stored by digest under the artifact. Blobs are co
 
 Drift is the condition where current source content differs from the hash recorded in the manifest.
 
-### 2.8 Registry
+### 2.8 Description
 
-A registry is a backend that stores, serves, or indexes CTX artifacts for remote access.
-
-### 2.9 Publish
-
-Publish is the act of writing the current local artifact state to a registry-backed remote instance.
-
-### 2.10 Remote instance
-
-A remote instance is a registry-hosted copy of a CTX artifact.
+A description is optional human-facing metadata that explains what a CTX artifact is for.
 
 ## 3. Design principles
 
@@ -109,7 +101,7 @@ The artifact, not the implementation, is the unit of portability. The artifact M
 
 ### 3.2 Local-first ownership
 
-A CTX artifact MUST remain usable without dependence on a hosted service. Remote publication is optional.
+A CTX artifact MUST remain usable without dependence on a hosted service.
 
 ### 3.3 Human-readable accumulation
 
@@ -125,7 +117,7 @@ Semantic and procedural knowledge SHOULD be represented as distinct retrieval su
 
 ### 3.6 Explicit state transitions
 
-Changes SHOULD occur through explicit operations such as add, update, record, query, and publish. Silent mutation SHOULD be avoided where possible.
+Changes SHOULD occur through explicit operations such as add, update, record, query, and notes writes. Silent mutation SHOULD be avoided where possible.
 
 ### 3.7 Optional raw content
 
@@ -153,7 +145,7 @@ A conformant artifact MAY contain:
 
 ### 4.4 Portability
 
-An artifact MAY exist only locally, MAY be published to a registry, or MAY exist in both places.
+An artifact MAY be copied, backed up, or opened by multiple local tools, provided the manifest and directory structure remain intact.
 
 ### 4.5 Minimal valid artifact
 
@@ -204,6 +196,10 @@ The manifest MUST include:
 - `sources`
 - `notes`
 
+The manifest MAY include:
+
+- `description`
+
 ### 6.3 Version
 
 `version` MUST identify the specification version and MUST be used for compatibility checks.
@@ -212,11 +208,15 @@ The manifest MUST include:
 
 `name` MUST match the directory name without the `.ctx` suffix.
 
-### 6.5 Timestamps
+### 6.5 Description
+
+`description`, if present, SHOULD be a concise human-facing summary of the artifact's purpose.
+
+### 6.6 Timestamps
 
 `created_at` and `updated_at` MUST be timestamps in ISO 8601 format.
 
-### 6.6 Config
+### 6.7 Config
 
 `config` SHOULD include fields such as:
 
@@ -227,7 +227,7 @@ The manifest MUST include:
 
 Implementations MAY include additional runtime knobs, but fields not required by the spec SHOULD be treated as implementation details unless explicitly standardized.
 
-### 6.7 Sources
+### 6.8 Sources
 
 `sources` MUST describe the indexed source roots and file entries associated with the artifact.
 
@@ -237,7 +237,7 @@ Each source root SHOULD record:
 - when it was added
 - the files currently associated with that root
 
-### 6.8 File entries
+### 6.9 File entries
 
 Each file entry MUST include:
 
@@ -253,7 +253,7 @@ Each file entry MAY include:
 
 `hash_at_index` represents the digest observed when the file was indexed. If current source content later differs, the file is considered drifted.
 
-### 6.9 Notes registry
+### 6.10 Notes registry
 
 The `notes` section of the manifest MUST track notes file entries and their hashes. Each entry SHOULD include:
 
@@ -263,7 +263,7 @@ The `notes` section of the manifest MUST track notes file entries and their hash
 
 Implementations MAY record ownership metadata or editing provenance if available.
 
-### 6.10 Unknown fields
+### 6.11 Unknown fields
 
 Unknown fields SHOULD be ignored or preserved in a way that does not corrupt the artifact. Implementations MUST NOT treat unknown fields as a reason to silently invalidate otherwise conforming artifacts.
 
@@ -391,55 +391,27 @@ If implemented, the notes update MUST preserve source history and SHOULD update 
 
 Drift MUST be detected explicitly. Re-indexing SHOULD occur only when an explicit update or equivalent operation is invoked, unless a profile states otherwise.
 
-## 11. Distribution profile
+## 11. Local interfaces and integrations
 
 ### 11.1 Purpose
 
-This section defines how CTX artifacts MAY be published, fetched, discovered, and queried through a registry-backed remote instance.
+CTX artifacts are intended to be usable from more than one local tool. This section clarifies that implementations MAY expose local interfaces such as a CLI, HTTP API, MCP server, editor integration, or skill package.
 
-This section is a profile layered on top of the artifact specification. It MUST NOT redefine the artifact format itself.
+### 11.2 Non-normative surface area
 
-### 11.2 Registry abstraction
+These interfaces are not required for artifact conformance. The artifact format remains the source of truth.
 
-A registry MUST be treated as a backend abstraction. The spec MUST NOT require a single provider or cloud service.
+### 11.3 Shared local access
 
-A registry MAY be implemented using HTTP, object storage, or another documented addressable backend.
+Multiple tools MAY read from and write to the same artifact on one machine, provided they preserve manifest correctness, notes integrity, and explicit drift handling.
 
-### 11.3 Publish semantics
+### 11.4 Notes as memory surface
 
-Publish MUST write the current local artifact state to a remote instance.
+When an implementation exposes long-term memory behavior, `notes/` SHOULD remain the durable human-readable surface rather than becoming an opaque implementation detail.
 
-Publish MAY create a new remote instance or overwrite an existing one, depending on registry policy.
+### 11.5 Query and write interoperability
 
-### 11.4 Fetch semantics
-
-Fetch MUST retrieve a remote instance for local use.
-
-### 11.5 Remote query semantics
-
-A remote instance SHOULD be queryable using the same logical artifact model as a local artifact.
-
-### 11.6 Divergence
-
-Local and remote instances MAY diverge over time.
-
-### 11.7 Republish semantics
-
-Republish SHOULD update the remote instance from the current local state.
-
-### 11.8 Conflict resolution
-
-If multiple replicas diverge, the default policy MAY be last-write-wins at the artifact level.
-
-Fine-grained merge semantics SHOULD be considered out of scope unless explicitly defined in a later version.
-
-### 11.9 Discovery
-
-Artifact lookup and naming MAY be registry-defined or profile-defined, provided the mechanism is documented.
-
-### 11.10 Non-goals
-
-Peer-to-peer synchronization, federated merge, and backend standardization MUST NOT be required by the core specification.
+Implementations MAY provide local interfaces that support querying, structured procedure recording, and notes read/write operations against the same artifact.
 
 ## 12. Interoperability and conformance
 
@@ -476,11 +448,7 @@ Notes MAY contain sensitive information and SHOULD be protected accordingly.
 
 ### 13.3 Source path exposure
 
-Distributed artifacts SHOULD minimize unnecessary leakage of local filesystem paths.
-
-### 13.4 Registry trust model
-
-Registry authentication and authorization SHOULD be implemented by the backend or profile.
+Implementations SHOULD minimize unnecessary leakage of local filesystem paths when exposing artifact data through local APIs or agent interfaces.
 
 ### 13.5 Tamper handling
 
@@ -488,13 +456,13 @@ If integrity checks fail, an implementation MUST report failure and SHOULD refus
 
 ## 14. Non-goals and future work
 
-### 14.1 Peer-to-peer distribution
+### 14.1 Remote publication
 
-Peer-to-peer distribution is not required in v0.2.
+Remote publication is not part of v0.2.
 
 ### 14.2 Background sync
 
-Background sync is not required in v0.2.
+Background sync is not part of v0.2.
 
 ### 14.3 Merge automation
 
@@ -506,7 +474,7 @@ Benchmarking is not part of the normative specification.
 
 ### 14.5 Backend standardization
 
-The specification does not standardize a single registry or cloud service.
+The specification does not standardize a single hosted backend or cloud service.
 
 ### 14.6 CLI standardization
 
@@ -537,6 +505,7 @@ example.ctx/
 {
   "version": "0.2",
   "name": "example",
+  "description": "Shared local memory for an agent workflow",
   "created_at": "2026-04-16T00:00:00Z",
   "updated_at": "2026-04-16T00:00:00Z",
   "config": {
@@ -558,7 +527,6 @@ example.ctx/
 
 ## Appendix C. Notes for implementers
 
-- This draft is intentionally compatible with the current CTX architecture while leaving room for future registry and sync work.
+- This draft is intentionally compatible with the current CTX architecture while keeping the artifact local-first.
 - The current reference implementation exposes a CLI, HTTP API, and MCP server, but the artifact spec MUST remain independent of those surfaces.
 - The current codebase already models manifest metadata, source entries, notes registry entries, semantic and procedural indexes, and drift-sensitive updates.
-- Publish and pull are treated here as a separate profile because they are not yet implemented in the reference CLI.
