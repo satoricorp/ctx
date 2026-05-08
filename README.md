@@ -1,4 +1,6 @@
-<div align="center">
+<table align="center">
+<tr>
+<td>
 <pre>
  ██████╗████████╗██╗  ██╗
 ██╔════╝╚══██╔══╝╚██╗██╔╝
@@ -9,7 +11,9 @@
 </pre>
 
 local-first context runtime for agents
-</div>
+</td>
+</tr>
+</table>
 
 `ctx` is a local context runtime for AI agents.
 
