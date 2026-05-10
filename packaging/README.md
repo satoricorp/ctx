@@ -51,6 +51,10 @@ Instead, publish the generated `.deb` asset into a separate signed apt repositor
 - `reprepro`
 - `aptly`
 
+This repo is set up to publish into:
+
+- `satoricorp/ctx-apt`
+
 That repo is responsible for:
 
 - `pool/` package storage
@@ -99,3 +103,23 @@ So the clean split is:
 
 - source + releases here
 - tap/repository metadata elsewhere
+
+## GitHub Actions Secrets
+
+The release workflow needs these secrets in `satoricorp/ctx`:
+
+- `PACKAGING_REPO_TOKEN`
+  A fine-grained token with contents write access to:
+  - `satoricorp/ctx`
+  - `satoricorp/homebrew-tap`
+  - `satoricorp/ctx-apt`
+- `APT_GPG_PRIVATE_KEY`
+  ASCII-armored private key used to sign the apt repository metadata.
+- `APT_GPG_PASSPHRASE`
+  Passphrase for that key.
+
+The workflow will:
+
+- publish the GitHub Release in this repo
+- commit `Formula/ctx.rb` into `satoricorp/homebrew-tap`
+- commit `.deb`, `Packages`, `Release`, `InRelease`, `Release.gpg`, and `ctx-archive-keyring.gpg` into `satoricorp/ctx-apt`

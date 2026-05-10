@@ -78,6 +78,9 @@ jobs:
     name: publish release
     needs: build
     runs-on: ubuntu-latest
+    env:
+      HOMEBREW_TAP_REPO: satoricorp/homebrew-tap
+      APT_REPO: satoricorp/ctx-apt
 
     steps:
       - uses: actions/checkout@v4
@@ -109,3 +112,89 @@ jobs:
         with:
           files: dist/*
           generate_release_notes: true
+
+      - name: validate packaging secrets
+        env:
+          PACKAGING_REPO_TOKEN: ${{ secrets.PACKAGING_REPO_TOKEN }}
+          APT_GPG_PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
+        run: |
+          test -n "${PACKAGING_REPO_TOKEN}" || (echo "missing secret PACKAGING_REPO_TOKEN" && exit 1)
+          test -n "${APT_GPG_PRIVATE_KEY}" || (echo "missing secret APT_GPG_PRIVATE_KEY" && exit 1)
+
+      - name: checkout homebrew tap
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.HOMEBREW_TAP_REPO }}
+          token: ${{ secrets.PACKAGING_REPO_TOKEN }}
+          path: homebrew-tap
+
+      - name: publish homebrew formula
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+
+          mkdir -p homebrew-tap/Formula
+          cp dist/ctx.rb homebrew-tap/Formula/ctx.rb
+
+          cd homebrew-tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          if [[ -n "$(git status --short)" ]]; then
+            git add Formula/ctx.rb
+            git commit -m "ctx ${version}"
+            git push origin HEAD:main
+          fi
+
+      - name: install apt repo tooling
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y apt-utils dpkg-dev gnupg
+
+      - name: checkout apt repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.APT_REPO }}
+          token: ${{ secrets.PACKAGING_REPO_TOKEN }}
+          path: ctx-apt
+
+      - name: import apt signing key
+        id: apt-key
+        shell: bash
+        env:
+          APT_GPG_PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          export GNUPGHOME="$(mktemp -d)"
+          chmod 700 "$GNUPGHOME"
+          printf '%s' "$APT_GPG_PRIVATE_KEY" | gpg --batch --import
+          fingerprint="$(gpg --batch --with-colons --list-secret-keys | awk -F: '/^fpr:/ {print $10; exit}')"
+          echo "gnupghome=$GNUPGHOME" >> "$GITHUB_OUTPUT"
+          echo "fingerprint=$fingerprint" >> "$GITHUB_OUTPUT"
+
+      - name: publish apt repository
+        shell: bash
+        env:
+          GNUPGHOME: ${{ steps.apt-key.outputs.gnupghome }}
+          APT_GPG_KEY_ID: ${{ steps.apt-key.outputs.fingerprint }}
+          APT_GPG_PASSPHRASE: ${{ secrets.APT_GPG_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+
+          scripts/build-apt-repo.sh \
+            --repo-dir ctx-apt \
+            --deb "dist/ctx_${version}_amd64.deb" \
+            --keyring-out ctx-apt/ctx-archive-keyring.gpg \
+            --signing-key "$APT_GPG_KEY_ID"
+
+          cd ctx-apt
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          if [[ -n "$(git status --short)" ]]; then
+            git add .
+            git commit -m "ctx ${version}"
+            git push origin HEAD:main
+          fi
