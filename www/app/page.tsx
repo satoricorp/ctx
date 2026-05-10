@@ -1,7 +1,6 @@
 import { berkeleyMono } from "./fonts";
 import { InstallCommand } from "./install-command";
 import { Logo } from "./logo";
-import { ThemeToggle } from "./theme-toggle";
 
 const BENEFITS = [
   {
@@ -258,7 +257,6 @@ export default function Home() {
               </span>
               <span>Satori Engineering Co.</span>
             </a>
-            <ThemeToggle />
           </div>
         </footer>
       </div>

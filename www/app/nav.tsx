@@ -9,6 +9,7 @@ import {
   NavigationMenuList,
 } from "@/components/ui/navigation-menu";
 import { berkeleyMono, blobLogo } from "./fonts";
+import { ThemeToggle } from "./theme-toggle";
 
 export function Nav() {
   const [scrolled, setScrolled] = useState(false);
@@ -33,47 +34,50 @@ export function Nav() {
           ctx
         </Link>
 
-        <NavigationMenu
-          className={`${berkeleyMono.className} [&_[data-slot=navigation-menu-link]]:text-xs [&_[data-slot=navigation-menu-link]]:transition-colors [&_[data-slot=navigation-menu-link]]:hover:text-[var(--accent-highlight)] [&_[data-slot=navigation-menu-trigger]]:h-8 [&_[data-slot=navigation-menu-trigger]]:px-2 [&_[data-slot=navigation-menu-trigger]]:py-1 [&_[data-slot=navigation-menu-trigger]]:text-xs`}
-        >
-          <NavigationMenuList>
+        <div className="flex items-center">
+          <NavigationMenu
+            className={`${berkeleyMono.className} [&_[data-slot=navigation-menu-link]]:text-xs [&_[data-slot=navigation-menu-link]]:transition-colors [&_[data-slot=navigation-menu-link]]:hover:text-[var(--accent-highlight)] [&_[data-slot=navigation-menu-trigger]]:h-8 [&_[data-slot=navigation-menu-trigger]]:px-2 [&_[data-slot=navigation-menu-trigger]]:py-1 [&_[data-slot=navigation-menu-trigger]]:text-xs`}
+          >
+            <NavigationMenuList>
+              <NavigationMenuItem>
+                <NavigationMenuLink render={<Link href="/#install" />}>
+                  Install
+                </NavigationMenuLink>
+              </NavigationMenuItem>
 
-            <NavigationMenuItem>
-              <NavigationMenuLink render={<Link href="/#install" />}>
-                Install
-              </NavigationMenuLink>
-            </NavigationMenuItem>
+              <NavigationMenuItem>
+                <NavigationMenuLink render={<Link href="/#use" />}>
+                  Use
+                </NavigationMenuLink>
+              </NavigationMenuItem>
 
-            <NavigationMenuItem>
-              <NavigationMenuLink render={<Link href="/#use" />}>
-                Use
-              </NavigationMenuLink>
-            </NavigationMenuItem>
+              <NavigationMenuItem>
+                <NavigationMenuLink render={<Link href="/#benefits" />}>
+                  Benefits
+                </NavigationMenuLink>
+              </NavigationMenuItem>
 
-            <NavigationMenuItem>
-              <NavigationMenuLink render={<Link href="/#benefits" />}>
-                Benefits
-              </NavigationMenuLink>
-            </NavigationMenuItem>
+              <NavigationMenuItem>
+                <NavigationMenuLink
+                  href="https://github.com/satoricorp/ctx/blob/main/docs/ctx-spec-v0.2-draft.md"
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  Spec
+                </NavigationMenuLink>
+              </NavigationMenuItem>
 
-            <NavigationMenuItem>
-              <NavigationMenuLink
-                href="https://github.com/satoricorp/ctx/blob/main/docs/ctx-spec-v0.2-draft.md"
-                target="_blank"
-                rel="noreferrer"
-              >
-                Spec
-              </NavigationMenuLink>
-            </NavigationMenuItem>
-
-            <NavigationMenuItem>
-              <NavigationMenuLink render={<Link href="/#contribute" />}>
-                Contribute
-              </NavigationMenuLink>
-            </NavigationMenuItem>
-
-          </NavigationMenuList>
-        </NavigationMenu>
+              <NavigationMenuItem>
+                <NavigationMenuLink render={<Link href="/#contribute" />}>
+                  Contribute
+                </NavigationMenuLink>
+              </NavigationMenuItem>
+            </NavigationMenuList>
+          </NavigationMenu>
+          <div className="ml-4">
+            <ThemeToggle />
+          </div>
+        </div>
       </div>
     </header>
   );
