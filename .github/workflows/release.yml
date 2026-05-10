@@ -1,0 +1,111 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: macos-13
+            target: x86_64-apple-darwin
+          - os: macos-14
+            target: aarch64-apple-darwin
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: build release binaries
+        run: cargo build --release --locked --target ${{ matrix.target }} --bin ctx --bin ctx-server
+
+      - name: package release archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          target="${{ matrix.target }}"
+          archive="ctx-${version}-${target}.tar.gz"
+
+          mkdir -p dist/package
+          cp "target/${target}/release/ctx" dist/package/
+          cp "target/${target}/release/ctx-server" dist/package/
+          cp README.md LICENSE dist/package/
+
+          tar -C dist/package -czf "dist/${archive}" ctx ctx-server README.md LICENSE
+          (
+            cd dist
+            shasum -a 256 "${archive}" > "${archive}.sha256"
+          )
+
+      - name: build deb package
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+
+          cargo install cargo-deb --locked
+          cargo deb --no-build --target x86_64-unknown-linux-gnu --output "dist/ctx_${version}_amd64.deb"
+
+          (
+            cd dist
+            shasum -a 256 "ctx_${version}_amd64.deb" > "ctx_${version}_amd64.deb.sha256"
+          )
+
+      - name: upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.target }}
+          path: dist/*
+
+  publish:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: generate homebrew formula
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          linux_sha="$(awk '{print $1}' "dist/ctx-${version}-x86_64-unknown-linux-gnu.tar.gz.sha256")"
+          macos_intel_sha="$(awk '{print $1}' "dist/ctx-${version}-x86_64-apple-darwin.tar.gz.sha256")"
+          macos_arm_sha="$(awk '{print $1}' "dist/ctx-${version}-aarch64-apple-darwin.tar.gz.sha256")"
+
+          scripts/render-homebrew-formula.sh \
+            --version "${version}" \
+            --linux-sha "${linux_sha}" \
+            --macos-intel-sha "${macos_intel_sha}" \
+            --macos-arm-sha "${macos_arm_sha}" \
+            > dist/ctx.rb
+
+      - name: create github release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true

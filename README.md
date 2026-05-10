@@ -67,6 +67,21 @@ export OPENAI_API_KEY=your_key_here
 
 After that, use `ctx` directly from your shell.
 
+## Package Managers
+
+This repo now owns the release artifacts needed for package-manager distribution:
+
+- GitHub Release tarballs for macOS and Linux
+- a generated Homebrew formula asset
+- a generated `.deb` package asset
+
+The release workflow and package-manager split are documented in [packaging/README.md](/Users/joe/git/ctx/packaging/README.md).
+
+The clean model is:
+
+- keep source and release assets in this repo
+- keep the Homebrew tap and apt repository in separate repos
+
 ## Install Skills
 
 For Codex-style runtimes, this repo also ships installable skills under `skills/.curated`.

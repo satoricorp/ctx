@@ -2,6 +2,13 @@
 name = "ctx"
 version = "0.1.0"
 edition = "2021"
+description = "Local context for agents and humans"
+license = "AGPL-3.0-only"
+repository = "https://github.com/satoricorp/ctx"
+homepage = "https://github.com/satoricorp/ctx"
+readme = "README.md"
+keywords = ["agents", "context", "memory", "mcp", "notes"]
+categories = ["command-line-utilities"]
 
 [[bin]]
 name = "ctx"
@@ -10,6 +17,25 @@ path = "src/main.rs"
 [[bin]]
 name = "ctx-server"
 path = "src/main_server.rs"
+
+[package.metadata.deb]
+maintainer = "Satori Engineering Co."
+copyright = "2026, Satori Engineering Co."
+license-file = ["LICENSE", "4"]
+section = "utils"
+priority = "optional"
+depends = "$auto"
+extended-description = """\
+ctx is local context for agents and humans.
+It stores markdown notes and local retrieval indices in a context artifact
+that you can use through the CLI, MCP, or installable skills.
+"""
+assets = [
+  ["target/release/ctx", "usr/bin/ctx", "755"],
+  ["target/release/ctx-server", "usr/bin/ctx-server", "755"],
+  ["README.md", "usr/share/doc/ctx/README.md", "644"],
+  ["LICENSE", "usr/share/doc/ctx/LICENSE", "644"],
+]
 
 [dependencies]
 anyhow = "1"
