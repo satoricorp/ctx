@@ -171,10 +171,6 @@ export default function Home() {
                   className={`bg-background/70 border-foreground/10 flex h-full min-h-[220px] flex-col gap-4 rounded-2xl border p-7 ${
                     index === 2 ? "md:col-span-2 xl:col-span-1" : ""
                   }`}
-                  style={{
-                    borderColor:
-                      "color-mix(in oklab, var(--accent-highlight) 18%, var(--border))",
-                  }}
                 >
                   <h3 className="text-foreground text-lg font-medium">{benefit.title}</h3>
                   <p className="text-muted-foreground text-sm leading-6">{benefit.body}</p>
@@ -212,10 +208,6 @@ export default function Home() {
                 <div
                   key={item.title}
                   className="bg-background/70 border-foreground/10 flex h-full min-h-[220px] flex-col gap-4 rounded-2xl border p-7"
-                  style={{
-                    borderColor:
-                      "color-mix(in oklab, var(--accent-highlight) 18%, var(--border))",
-                  }}
                 >
                   <p
                     className={`${berkeleyMono.className} text-muted-foreground text-[11px] uppercase tracking-[0.18em]`}
