@@ -10,9 +10,9 @@ import { cn } from "@/lib/utils";
 const GA_MEASUREMENT_ID = "G-BQK5SZ9YL4";
 
 export const metadata: Metadata = {
-  title: "CTX: Local Memory Layer for Agents",
+  title: "CTX: Local Context for Agents and Humans",
   description:
-    "CTX is a local memory layer for agents with plain markdown notes, local indexing, MCP, and installable skills.",
+    "CTX is local context for agents and humans with plain markdown notes, local indexing, MCP, and installable skills.",
 };
 
 export default function RootLayout({

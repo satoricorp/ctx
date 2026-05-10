@@ -133,9 +133,6 @@ export default function Home() {
               <p className="text-foreground max-w-2xl text-lg leading-8 md:text-xl">
                 ctx gives you and your agents shared local contexts.
               </p>
-              <p className="text-muted-foreground max-w-2xl text-sm leading-7 md:text-base">
-                Editable markdown context and file indexing. Query with MCP and Skills.
-              </p>
               <div
                 className={`${berkeleyMono.className} flex flex-wrap gap-x-4 gap-y-2 text-[11px] uppercase tracking-[0.16em]`}
                 style={{ color: "var(--accent-highlight)" }}
