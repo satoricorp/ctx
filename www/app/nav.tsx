@@ -34,7 +34,7 @@ export function Nav() {
         </Link>
 
         <NavigationMenu
-          className={`${berkeleyMono.className} [&_[data-slot=navigation-menu-link]]:text-xs [&_[data-slot=navigation-menu-trigger]]:h-8 [&_[data-slot=navigation-menu-trigger]]:px-2 [&_[data-slot=navigation-menu-trigger]]:py-1 [&_[data-slot=navigation-menu-trigger]]:text-xs`}
+          className={`${berkeleyMono.className} [&_[data-slot=navigation-menu-link]]:text-xs [&_[data-slot=navigation-menu-link]]:transition-colors [&_[data-slot=navigation-menu-link]]:hover:text-[var(--accent-highlight)] [&_[data-slot=navigation-menu-trigger]]:h-8 [&_[data-slot=navigation-menu-trigger]]:px-2 [&_[data-slot=navigation-menu-trigger]]:py-1 [&_[data-slot=navigation-menu-trigger]]:text-xs`}
         >
           <NavigationMenuList>
 

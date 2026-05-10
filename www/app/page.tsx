@@ -75,7 +75,8 @@ function SectionHeading({
   return (
     <div className="flex max-w-4xl flex-col gap-3">
       <p
-        className={`${berkeleyMono.className} text-muted-foreground text-xs uppercase tracking-[0.2em]`}
+        className={`${berkeleyMono.className} text-xs uppercase tracking-[0.2em]`}
+        style={{ color: "var(--accent-highlight)" }}
       >
         {eyebrow}
       </p>
@@ -124,7 +125,8 @@ export default function Home() {
             <div className="flex max-w-4xl flex-col items-start gap-6">
               <Logo />
               <p
-                className={`${berkeleyMono.className} text-muted-foreground max-w-prose text-xs uppercase leading-relaxed tracking-[0.2em]`}
+                className={`${berkeleyMono.className} max-w-prose text-xs uppercase leading-relaxed tracking-[0.2em]`}
+                style={{ color: "var(--accent-highlight)" }}
               >
                 <span>§</span>
                 <span className="ml-2">Spec / 0.2 — Local Context Layer For Agents</span>
@@ -136,7 +138,8 @@ export default function Home() {
                 Editable markdown context and file indexing. Query with MCP and Skills.
               </p>
               <div
-                className={`${berkeleyMono.className} text-muted-foreground flex flex-wrap gap-x-4 gap-y-2 text-[11px] uppercase tracking-[0.16em]`}
+                className={`${berkeleyMono.className} flex flex-wrap gap-x-4 gap-y-2 text-[11px] uppercase tracking-[0.16em]`}
+                style={{ color: "var(--accent-highlight)" }}
               >
                 <span>editable markdown</span>
                 <span>shared local context</span>
@@ -168,6 +171,10 @@ export default function Home() {
                   className={`bg-background/70 border-foreground/10 flex h-full min-h-[220px] flex-col gap-4 rounded-2xl border p-7 ${
                     index === 2 ? "md:col-span-2 xl:col-span-1" : ""
                   }`}
+                  style={{
+                    borderColor:
+                      "color-mix(in oklab, var(--accent-highlight) 18%, var(--border))",
+                  }}
                 >
                   <h3 className="text-foreground text-lg font-medium">{benefit.title}</h3>
                   <p className="text-muted-foreground text-sm leading-6">{benefit.body}</p>
@@ -205,6 +212,10 @@ export default function Home() {
                 <div
                   key={item.title}
                   className="bg-background/70 border-foreground/10 flex h-full min-h-[220px] flex-col gap-4 rounded-2xl border p-7"
+                  style={{
+                    borderColor:
+                      "color-mix(in oklab, var(--accent-highlight) 18%, var(--border))",
+                  }}
                 >
                   <p
                     className={`${berkeleyMono.className} text-muted-foreground text-[11px] uppercase tracking-[0.18em]`}
