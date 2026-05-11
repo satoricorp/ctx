@@ -136,15 +136,21 @@ jobs:
           set -euo pipefail
           version="${GITHUB_REF_NAME#v}"
 
-          mkdir -p homebrew-tap/Formula
+          mkdir -p homebrew-tap/Formula homebrew-tap/dist
           cp dist/ctx.rb homebrew-tap/Formula/ctx.rb
+          cp dist/ctx-"${version}"-x86_64-unknown-linux-gnu.tar.gz homebrew-tap/dist/
+          cp dist/ctx-"${version}"-x86_64-unknown-linux-gnu.tar.gz.sha256 homebrew-tap/dist/
+          cp dist/ctx-"${version}"-x86_64-apple-darwin.tar.gz homebrew-tap/dist/
+          cp dist/ctx-"${version}"-x86_64-apple-darwin.tar.gz.sha256 homebrew-tap/dist/
+          cp dist/ctx-"${version}"-aarch64-apple-darwin.tar.gz homebrew-tap/dist/
+          cp dist/ctx-"${version}"-aarch64-apple-darwin.tar.gz.sha256 homebrew-tap/dist/
 
           cd homebrew-tap
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
           if [[ -n "$(git status --short)" ]]; then
-            git add Formula/ctx.rb
+            git add Formula/ctx.rb dist/
             git commit -m "ctx ${version}"
             git push origin HEAD:main
           fi

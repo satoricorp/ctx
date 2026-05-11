@@ -44,13 +44,13 @@ class Ctx < Formula
   license "AGPL-3.0-only"
 
   if OS.mac? && Hardware::CPU.arm?
-    url "https://github.com/satoricorp/ctx/releases/download/v${version}/ctx-${version}-aarch64-apple-darwin.tar.gz"
+    url "https://raw.githubusercontent.com/satoricorp/homebrew-tap/main/dist/ctx-${version}-aarch64-apple-darwin.tar.gz"
     sha256 "${macos_arm_sha}"
   elsif OS.mac?
-    url "https://github.com/satoricorp/ctx/releases/download/v${version}/ctx-${version}-x86_64-apple-darwin.tar.gz"
+    url "https://raw.githubusercontent.com/satoricorp/homebrew-tap/main/dist/ctx-${version}-x86_64-apple-darwin.tar.gz"
     sha256 "${macos_intel_sha}"
   else
-    url "https://github.com/satoricorp/ctx/releases/download/v${version}/ctx-${version}-x86_64-unknown-linux-gnu.tar.gz"
+    url "https://raw.githubusercontent.com/satoricorp/homebrew-tap/main/dist/ctx-${version}-x86_64-unknown-linux-gnu.tar.gz"
     sha256 "${linux_sha}"
   end
 
