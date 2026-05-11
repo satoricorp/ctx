@@ -117,8 +117,9 @@ jobs:
 
       - name: create github release
         uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.PACKAGING_REPO_TOKEN }}
         with:
-          token: ${{ secrets.PACKAGING_REPO_TOKEN }}
           files: dist/*
           generate_release_notes: true
 
