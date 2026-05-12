@@ -138,6 +138,14 @@ ctx add src
 
 `ctx add` queues background indexing. Use `ctx status` to watch progress.
 
+Remember durable text in the notes layer:
+
+```bash
+ctx remember "Use RS256 tokens only"
+ctx remember --topic auth "Reject unsigned JWTs"
+ctx remember --topic deploy --stdin
+```
+
 Query what the context already knows:
 
 ```bash
@@ -171,8 +179,9 @@ The basic model is:
 1. `ctx init <name>` creates a named local memory space.
 2. `ctx notes` opens the human-editable notes for that memory space.
 3. `ctx add <path>` queues code, docs, or files for indexing.
-4. `ctx query "<question>"` asks against what is already there.
-5. Multiple agents can share the same context through skills or MCP.
+4. `ctx remember "<text>"` writes durable facts, decisions, summaries, preferences, or reminders into markdown notes.
+5. `ctx query "<question>"` asks against what is already there.
+6. Multiple agents can share the same context through skills or MCP.
 
 If you only want the shortest possible flow, this is it:
 
@@ -180,6 +189,7 @@ If you only want the shortest possible flow, this is it:
 ctx init memory --description "Shared memory across my agents"
 ctx use memory
 ctx add .
+ctx remember --topic decisions "Use ctx remember for durable text, and ctx add for files."
 ctx query "what have we already learned about this project?"
 ctx notes
 ```
@@ -278,6 +288,8 @@ ctx init <name>
 ctx use <name>
 ctx list
 ctx add <path>
+ctx remember [--topic <topic>] <text>
+ctx remember [--topic <topic>] --stdin
 ctx query "<text>"
 ctx update
 ctx status
