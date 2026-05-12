@@ -20,7 +20,7 @@ const BENEFITS = [
 const INSTALL_STEPS = [
   {
     title: "Install",
-    command: "brew tap satoricorp/tap\nbrew install satoricorp/tap/ctx",
+    command: "brew tap satoricorp/tap && brew install satoricorp/tap/ctx",
     body: "Installs `ctx`.",
   },
   {
@@ -36,8 +36,9 @@ const INSTALL_STEPS = [
   },
   {
     title: "Use It",
-    command: 'ctx add .\nctx query "what do we already know?"',
-    body: "Index any directory and start asking questions.",
+    command:
+      'ctx remember "Openclaw uses ctx for shared local context."\nctx query "what does Openclaw use ctx for?"',
+    body: "Save a fact and ask about it.",
   },
 ];
 

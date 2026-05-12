@@ -4,7 +4,7 @@ import { GeistMono } from "geist/font/mono";
 import { Check, Copy } from "lucide-react";
 import { useCallback, useState } from "react";
 
-const INSTALL_CMD = "brew tap satoricorp/tap\nbrew install satoricorp/tap/ctx";
+const INSTALL_CMD = "brew tap satoricorp/tap && brew install satoricorp/tap/ctx";
 
 export function InstallCommand() {
   const [copied, setCopied] = useState(false);
