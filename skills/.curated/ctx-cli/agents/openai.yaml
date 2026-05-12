@@ -1,4 +1,0 @@
-interface:
-  display_name: "CTX CLI"
-  short_description: "Operate local ctx contexts from the CLI."
-  default_prompt: "Use $ctx-cli to initialize a context, queue indexing, run queries, inspect status, open notes, or start ctx MCP locally."
