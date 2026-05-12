@@ -20,7 +20,7 @@ const BENEFITS = [
 const INSTALL_STEPS = [
   {
     title: "Install",
-    command: "cargo install --git https://github.com/satoricorp/ctx --bins",
+    command: "brew tap satoricorp/tap\nbrew install satoricorp/tap/ctx",
     body: "Installs `ctx`.",
   },
   {

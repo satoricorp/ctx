@@ -4,7 +4,7 @@ import { GeistMono } from "geist/font/mono";
 import { Check, Copy } from "lucide-react";
 import { useCallback, useState } from "react";
 
-const INSTALL_CMD = "cargo install --git https://github.com/satoricorp/ctx --bins";
+const INSTALL_CMD = "brew tap satoricorp/tap\nbrew install satoricorp/tap/ctx";
 
 export function InstallCommand() {
   const [copied, setCopied] = useState(false);
@@ -23,7 +23,7 @@ export function InstallCommand() {
     <div
       className={`${GeistMono.className} bg-muted text-foreground flex w-full max-w-2xl items-center gap-3 rounded-xl border px-4 py-3`}
     >
-      <code className="min-w-0 flex-1 overflow-x-auto text-xs md:text-sm">
+      <code className="min-w-0 flex-1 overflow-x-auto text-xs whitespace-pre md:text-sm">
         {INSTALL_CMD}
       </code>
       <button

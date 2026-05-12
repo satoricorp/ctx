@@ -45,7 +45,14 @@ Use it when you want to:
 
 ## Install
 
-Install the binaries locally:
+Install with Homebrew:
+
+```bash
+brew tap satoricorp/tap
+brew install satoricorp/tap/ctx
+```
+
+Or build from source:
 
 ```bash
 git clone <your-fork-or-this-repo>
