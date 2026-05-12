@@ -15,6 +15,18 @@ pub struct UserConfig {
     pub created_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SignupConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub submitted_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skipped_at: Option<DateTime<Utc>>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     #[serde(default)]
@@ -25,6 +37,8 @@ pub struct Config {
     pub embedding_model: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub user: Option<UserConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signup: Option<SignupConfig>,
     #[serde(default = "default_alpha")]
     pub alpha: f32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -38,6 +52,7 @@ impl Default for Config {
             extraction_model: default_extraction_model(),
             embedding_model: default_embedding_model(),
             user: None,
+            signup: None,
             alpha: default_alpha(),
             default_context: None,
         }

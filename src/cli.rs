@@ -70,7 +70,16 @@ enum Commands {
 }
 
 pub async fn run() -> Result<()> {
-    match Cli::parse().command {
+    let cli = Cli::parse();
+
+    match &cli.command {
+        Commands::RunIndexJob(_) | Commands::Mcp(_) => {}
+        _ => {
+            let _ = crate::signup::maybe_collect_signup();
+        }
+    }
+
+    match cli.command {
         Commands::Init(args) => init::run(args).await,
         Commands::Add(args) => add::run(args).await,
         Commands::Remember(args) => remember::run(args).await,

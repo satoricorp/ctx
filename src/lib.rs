@@ -12,6 +12,7 @@ pub mod mcp;
 pub mod models;
 pub mod notes_update;
 pub mod retrieval;
+pub mod signup;
 pub mod store;
 
 use anyhow::{bail, Context, Result};
