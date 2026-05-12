@@ -7,6 +7,7 @@ pub mod mcp;
 pub mod notes;
 pub mod progress;
 pub mod query;
+pub mod remember;
 pub mod run_index_job;
 pub mod scope;
 pub mod status;
@@ -45,6 +46,8 @@ enum Commands {
     Init(init::InitArgs),
     /// Queue a background indexing job for a file or directory.
     Add(add::AddArgs),
+    /// Write durable text memory into context notes.
+    Remember(remember::RememberArgs),
     /// Search indexed content and synthesize an answer.
     Query(query::QueryArgs),
     /// Re-index changed files and refresh notes.
@@ -70,6 +73,7 @@ pub async fn run() -> Result<()> {
     match Cli::parse().command {
         Commands::Init(args) => init::run(args).await,
         Commands::Add(args) => add::run(args).await,
+        Commands::Remember(args) => remember::run(args).await,
         Commands::Query(args) => query::run(args).await,
         Commands::Update(args) => update::run(args).await,
         Commands::Use(args) => use_context::run(args).await,
