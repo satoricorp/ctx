@@ -146,11 +146,14 @@ ctx remember --topic auth "Reject unsigned JWTs"
 ctx remember --topic deploy --stdin
 ```
 
+`ctx remember` writes into the selected context's `notes/` directory, and those notes are queryable immediately.
+
 Query what the context already knows:
 
 ```bash
 ctx query "how does ctx store notes?"
 ctx query "what decisions have we already made about auth?"
+ctx query -c memory "what did we already decide about auth?"
 ```
 
 Refresh after files change or notes drift:
@@ -180,8 +183,10 @@ The basic model is:
 2. `ctx notes` opens the human-editable notes for that memory space.
 3. `ctx add <path>` queues code, docs, or files for indexing.
 4. `ctx remember "<text>"` writes durable facts, decisions, summaries, preferences, or reminders into markdown notes.
-5. `ctx query "<question>"` asks against what is already there.
+5. `ctx query "<question>"` asks against what is already there, including `notes/`.
 6. Multiple agents can share the same context through skills or MCP.
+
+If you write to one context and query another, you will not see that note. Use `ctx use <name>` to set a default context or pass `-c, --context <name>` explicitly.
 
 If you only want the shortest possible flow, this is it:
 

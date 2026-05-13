@@ -33,7 +33,7 @@ pub async fn run(args: RememberArgs) -> Result<()> {
     let path = format!("notes/topics/{topic}.md");
 
     let outcome = crate::write_notes_file(&context, &path, &entry, NotesWriteMode::Append)?;
-    println!("remembered in {}", outcome.path);
+    println!("remembered in {context}: {}", outcome.path);
     Ok(())
 }
 

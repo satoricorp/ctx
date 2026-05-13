@@ -15,8 +15,8 @@ const COLOR_SOURCE_TEXT: &str = "\x1b[36m";
 
 #[derive(Debug, Args)]
 #[command(
-    about = "Search indexed content in a context and synthesize an answer",
-    long_about = "Search indexed content in a context and synthesize an answer.\n\nUse -c, --context <name> to query a specific context."
+    about = "Search a context, including notes, and synthesize an answer",
+    long_about = "Search a context, including notes and indexed content, and synthesize an answer.\n\nUse -c, --context <name> to query a specific context."
 )]
 pub struct QueryArgs {
     #[command(flatten)]

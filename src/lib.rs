@@ -2425,6 +2425,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn notes_are_queryable_without_reindex() {
+        let _guard = crate::test_support::env_lock()
+            .lock()
+            .expect("test lock poisoned");
+        let _env = setup_notes_env();
+
+        init_context("notes-query").await.expect("init context");
+        write_notes_file(
+            "notes-query",
+            "notes/general.md",
+            "my name is joe\n",
+            NotesWriteMode::Append,
+        )
+        .expect("seed remember note");
+
+        let results = query_context("notes-query", "what is my name?", QueryType::Semantic, 5)
+            .await
+            .expect("query notes");
+
+        assert!(results.iter().any(|result| {
+            result.kind == "notes"
+                && result.source == "notes/topics/general.md"
+                && result.content.to_lowercase().contains("my name is joe")
+        }));
+    }
+
+    #[tokio::test]
     async fn drift_state_reads_manifest_only() {
         let _guard = crate::test_support::env_lock()
             .lock()
