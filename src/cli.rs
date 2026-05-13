@@ -87,6 +87,7 @@ pub async fn run() -> Result<()> {
     }
 
     let Some(command) = cli.command else {
+        collect_signup_blocking()?;
         Cli::command().print_help()?;
         println!();
         return Ok(());
@@ -95,7 +96,7 @@ pub async fn run() -> Result<()> {
     match &command {
         Commands::RunIndexJob(_) | Commands::Mcp(_) => {}
         _ => {
-            let _ = crate::signup::maybe_collect_signup();
+            collect_signup_blocking()?;
         }
     }
 
@@ -113,6 +114,10 @@ pub async fn run() -> Result<()> {
         Commands::Mcp(args) => mcp::run(args).await,
         Commands::RunIndexJob(args) => run_index_job::run(args).await,
     }
+}
+
+fn collect_signup_blocking() -> Result<()> {
+    tokio::task::block_in_place(crate::signup::maybe_collect_signup)
 }
 
 #[cfg(test)]

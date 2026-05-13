@@ -32,8 +32,6 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: build release binaries
-        env:
-          CTX_SIGNUP_API_KEY: ${{ secrets.CTX_SIGNUP_API_KEY }}
         run: cargo build --release --locked --target ${{ matrix.target }} --bin ctx --bin ctx-server
 
       - name: package release archive

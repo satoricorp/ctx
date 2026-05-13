@@ -1,9 +1,8 @@
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::Utc;
-use dialoguer::{theme::ColorfulTheme, Confirm, Input};
 use reqwest::blocking::Client;
 use serde::Serialize;
-use std::io::IsTerminal;
+use std::io::{self, IsTerminal, Write};
 use std::time::Duration;
 
 use crate::install::{load_config, save_config, Config, SignupConfig};
@@ -13,6 +12,10 @@ const SOURCE_NAME: &str = "ctx";
 const ENV_INGEST_URL: &str = "CTX_SIGNUP_INGEST_URL";
 const ENV_API_KEY: &str = "CTX_SIGNUP_API_KEY";
 const ENV_DISABLE_PROMPT: &str = "CTX_DISABLE_SIGNUP_PROMPT";
+const BUNDLED_INGEST_API_KEY: &str = "satori-eng-co-random-token-808";
+const MUTED: &str = "\x1b[2m";
+const RESET: &str = "\x1b[0m";
+const HIGHLIGHT: &str = "\x1b[1;36m";
 
 #[derive(Debug, Serialize)]
 struct SignupPayload<'a> {
@@ -22,50 +25,36 @@ struct SignupPayload<'a> {
     gx_version: &'a str,
 }
 
+struct SignupInput {
+    name: String,
+    email: String,
+}
+
 pub fn maybe_collect_signup() -> Result<()> {
     if !should_prompt() {
         return Ok(());
     }
 
-    let api_key = match ingest_api_key() {
-        Some(value) => value,
-        None => return Ok(()),
-    };
-
     let mut config = load_config()?;
-    if signup_completed(&config) {
+    if signup_completed(&config) || signup_skipped(&config) {
         return Ok(());
     }
-
-    let theme = ColorfulTheme::default();
-    let share = Confirm::with_theme(&theme)
-        .with_prompt("Share your name and email for ctx updates?")
-        .default(false)
-        .interact()
-        .context("prompt for ctx signup")?;
-
-    if !share {
-        mark_signup_skipped(&mut config);
+    if let Some((name, email)) = pending_signup(&config)? {
+        maybe_submit_pending_signup(&mut config, &name, &email, false)?;
         save_config(&config)?;
         return Ok(());
     }
 
-    let name: String = Input::with_theme(&theme)
-        .with_prompt("Name")
-        .validate_with(|value: &String| validate_name(value))
-        .interact_text()
-        .context("prompt for signup name")?;
+    let Some(input) = collect_signup_input()? else {
+        mark_signup_skipped(&mut config);
+        save_config(&config)?;
+        return Ok(());
+    };
 
-    let email: String = Input::with_theme(&theme)
-        .with_prompt("Email")
-        .validate_with(|value: &String| validate_email(value))
-        .interact_text()
-        .context("prompt for signup email")?;
-
-    let name = normalize_name(&name)?;
-    let email = normalize_email(&email)?;
-    submit_signup(&name, &email, &api_key)?;
-    mark_signup_submitted(&mut config, &name, &email);
+    let name = normalize_name(&input.name)?;
+    let email = normalize_email(&input.email)?;
+    mark_signup_pending(&mut config, &name, &email);
+    maybe_submit_pending_signup(&mut config, &name, &email, true)?;
     save_config(&config)?;
     Ok(())
 }
@@ -90,8 +79,27 @@ fn signup_completed(config: &Config) -> bool {
     config
         .signup
         .as_ref()
-        .map(|signup| signup.submitted_at.is_some() || signup.skipped_at.is_some())
+        .map(|signup| signup.submitted_at.is_some())
         .unwrap_or(false)
+}
+
+fn signup_skipped(config: &Config) -> bool {
+    config
+        .signup
+        .as_ref()
+        .map(|signup| signup.skipped_at.is_some())
+        .unwrap_or(false)
+}
+
+fn pending_signup(config: &Config) -> Result<Option<(String, String)>> {
+    let Some(signup) = config.signup.as_ref() else {
+        return Ok(None);
+    };
+    let (Some(name), Some(email)) = (signup.name.as_deref(), signup.email.as_deref()) else {
+        return Ok(None);
+    };
+
+    Ok(Some((normalize_name(name)?, normalize_email(email)?)))
 }
 
 fn mark_signup_skipped(config: &mut Config) {
@@ -99,6 +107,15 @@ fn mark_signup_skipped(config: &mut Config) {
     let mut signup = config.signup.clone().unwrap_or_default();
     signup.skipped_at = Some(now);
     config.signup = Some(signup);
+}
+
+fn mark_signup_pending(config: &mut Config, name: &str, email: &str) {
+    config.signup = Some(SignupConfig {
+        name: Some(name.to_string()),
+        email: Some(email.to_string()),
+        submitted_at: None,
+        skipped_at: None,
+    });
 }
 
 fn mark_signup_submitted(config: &mut Config, name: &str, email: &str) {
@@ -115,12 +132,30 @@ fn ingest_url() -> String {
     std::env::var(ENV_INGEST_URL).unwrap_or_else(|_| DEFAULT_INGEST_URL.to_string())
 }
 
-fn ingest_api_key() -> Option<String> {
+fn ingest_api_key() -> String {
     std::env::var(ENV_API_KEY)
         .ok()
         .filter(|value| !value.trim().is_empty())
-        .or_else(|| option_env!("CTX_SIGNUP_API_KEY").map(str::to_owned))
-        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| BUNDLED_INGEST_API_KEY.to_string())
+}
+
+fn maybe_submit_pending_signup(
+    config: &mut Config,
+    name: &str,
+    email: &str,
+    verbose: bool,
+) -> Result<()> {
+    let api_key = ingest_api_key();
+
+    if let Err(error) = submit_signup(name, email, &api_key) {
+        if verbose {
+            eprintln!("ctx: signup submission failed: {error}");
+        }
+        return Ok(());
+    }
+
+    mark_signup_submitted(config, name, email);
+    Ok(())
 }
 
 fn submit_signup(name: &str, email: &str, api_key: &str) -> Result<()> {
@@ -166,16 +201,38 @@ fn submit_signup_with_client(
     bail!("signup request failed with status {}", response.status())
 }
 
-fn validate_name(value: &str) -> Result<(), String> {
-    normalize_name(value)
-        .map(|_| ())
-        .map_err(|err| err.to_string())
+fn collect_signup_input() -> Result<Option<SignupInput>> {
+    println!("Add your name and email to CTX");
+    println!("{MUTED}Type skip in Name to opt out.{RESET}");
+    println!();
+
+    let name = prompt_signup_line("Name").context("prompt for signup name")?;
+    if is_skip(&name) {
+        return Ok(None);
+    }
+
+    let email = prompt_signup_line("Email").context("prompt for signup email")?;
+    println!();
+
+    Ok(Some(SignupInput { name, email }))
 }
 
-fn validate_email(value: &str) -> Result<(), String> {
-    normalize_email(value)
-        .map(|_| ())
-        .map_err(|err| err.to_string())
+fn prompt_signup_line(label: &str) -> Result<String> {
+    print!("{HIGHLIGHT}{label}{RESET}: ");
+    io::stdout().flush().context("flush signup prompt")?;
+    read_input_line()
+}
+
+fn read_input_line() -> Result<String> {
+    let mut value = String::new();
+    io::stdin()
+        .read_line(&mut value)
+        .context("read signup input")?;
+    Ok(value.trim_end_matches(['\r', '\n']).to_string())
+}
+
+fn is_skip(value: &str) -> bool {
+    value.trim().eq_ignore_ascii_case("skip")
 }
 
 fn normalize_name(value: &str) -> Result<String> {
