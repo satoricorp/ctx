@@ -17,7 +17,7 @@ pub mod use_context;
 use anyhow::Result;
 use clap::{
     builder::{styling::AnsiColor, Styles},
-    ArgAction, Parser, Subcommand,
+    ArgAction, CommandFactory, Parser, Subcommand,
 };
 
 const CLI_STYLES: Styles = Styles::styled()
@@ -32,7 +32,7 @@ const CLI_HELP_TEMPLATE: &str = "{before-help}\n{usage-heading} {usage}\n\n{all-
 #[derive(Debug, Parser)]
 #[command(name = "ctx")]
 #[command(about = "local-first context runtime for agents")]
-#[command(version, disable_version_flag = true)]
+#[command(disable_version_flag = true)]
 #[command(before_help = CTX_BANNER)]
 #[command(help_template = CLI_HELP_TEMPLATE)]
 #[command(styles = CLI_STYLES)]
@@ -40,13 +40,13 @@ pub struct Cli {
     #[arg(
         short = 'v',
         long = "version",
-        action = ArgAction::Version,
+        action = ArgAction::SetTrue,
         help = "Print version"
     )]
     version: bool,
 
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -81,14 +81,25 @@ enum Commands {
 pub async fn run() -> Result<()> {
     let cli = Cli::parse();
 
-    match &cli.command {
+    if cli.version {
+        println!("ctx {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+
+    let Some(command) = cli.command else {
+        Cli::command().print_help()?;
+        println!();
+        return Ok(());
+    };
+
+    match &command {
         Commands::RunIndexJob(_) | Commands::Mcp(_) => {}
         _ => {
             let _ = crate::signup::maybe_collect_signup();
         }
     }
 
-    match cli.command {
+    match command {
         Commands::Init(args) => init::run(args).await,
         Commands::Add(args) => add::run(args).await,
         Commands::Remember(args) => remember::run(args).await,
@@ -101,5 +112,30 @@ pub async fn run() -> Result<()> {
         Commands::Doctor(args) => doctor::run(args).await,
         Commands::Mcp(args) => mcp::run(args).await,
         Commands::RunIndexJob(args) => run_index_job::run(args).await,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn detects_short_and_long_version_requests() {
+        let short = Cli::try_parse_from(["ctx", "-v"]).expect("short version should parse");
+        assert!(short.version);
+        assert!(short.command.is_none());
+
+        let long = Cli::try_parse_from(["ctx", "--version"]).expect("long version should parse");
+        assert!(long.version);
+        assert!(long.command.is_none());
+    }
+
+    #[test]
+    fn query_parse_does_not_require_version() {
+        let cli = Cli::try_parse_from(["ctx", "query", "whats my name"])
+            .expect("query should parse without version flag");
+
+        assert!(matches!(cli.command, Some(Commands::Query(_))));
     }
 }
