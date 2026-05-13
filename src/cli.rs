@@ -21,12 +21,12 @@ use clap::{
 };
 
 const CLI_STYLES: Styles = Styles::styled()
-    .header(AnsiColor::Cyan.on_default().bold())
-    .usage(AnsiColor::Cyan.on_default().bold())
+    .header(AnsiColor::White.on_default().bold())
+    .usage(AnsiColor::White.on_default().bold())
     .literal(AnsiColor::Cyan.on_default().bold())
     .placeholder(AnsiColor::Green.on_default());
 
-const CTX_BANNER: &str = "\x1b[1;36m ██████╗████████╗██╗  ██╗\n██╔════╝╚══██╔══╝╚██╗██╔╝\n██║        ██║    ╚███╔╝\n██║        ██║    ██╔██╗\n╚██████╗   ██║   ██╔╝ ██╗\n ╚═════╝   ╚═╝   ╚═╝  ╚═╝\x1b[0m\n\x1b[36mlocal-first context runtime for agents\x1b[0m";
+const CTX_BANNER: &str = "\x1b[1;36m ██████╗████████╗██╗  ██╗\n██╔════╝╚══██╔══╝╚██╗██╔╝\n██║        ██║    ╚███╔╝\n██║        ██║    ██╔██╗\n╚██████╗   ██║   ██╔╝ ██╗\n ╚═════╝   ╚═╝   ╚═╝  ╚═╝\x1b[0m\n\x1b[37mlocal-first context runtime for agents\x1b[0m";
 const CLI_HELP_TEMPLATE: &str = "{before-help}\n{usage-heading} {usage}\n\n{all-args}";
 
 #[derive(Debug, Parser)]
