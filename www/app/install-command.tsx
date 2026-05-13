@@ -21,7 +21,7 @@ export function InstallCommand() {
 
   return (
     <div
-      className={`${GeistMono.className} bg-muted text-foreground flex w-full max-w-2xl items-center gap-3 rounded-xl border px-4 py-3`}
+      className={`${GeistMono.className} bg-foreground/[0.04] text-foreground dark:bg-white/[0.06] flex w-full max-w-2xl items-center gap-3 rounded-xl border px-4 py-3`}
     >
       <code className="min-w-0 flex-1 overflow-x-auto text-xs whitespace-pre md:text-sm">
         {INSTALL_CMD}
