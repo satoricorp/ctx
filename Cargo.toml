@@ -1,6 +1,6 @@
 [package]
 name = "ctx"
-version = "0.1.8"
+version = "0.1.9"
 edition = "2021"
 description = "Local context for agents and humans"
 license = "AGPL-3.0-only"
