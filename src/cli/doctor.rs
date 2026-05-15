@@ -4,15 +4,12 @@ use tokio::sync::mpsc;
 
 use crate::cli::progress::CliSpinner;
 use crate::cli::scope::{resolve_context_name, ContextSelectArgs};
+use crate::cli::theme;
 use crate::doctor::{run_doctor, CheckReport, CheckStatus, DoctorReport};
 
-const COLOR_RESET: &str = "\x1b[0m";
 const COLOR_OK: &str = "\x1b[32;1m";
 const COLOR_WARN: &str = "\x1b[33;1m";
 const COLOR_FAIL: &str = "\x1b[31;1m";
-const COLOR_LABEL: &str = "\x1b[36;1m";
-const COLOR_META: &str = "\x1b[90m";
-const COLOR_FIX: &str = "\x1b[32m";
 
 #[derive(Debug, Args)]
 #[command(about = "Check a context for problems and optionally repair them")]
@@ -64,14 +61,27 @@ pub async fn run(args: DoctorArgs) -> Result<()> {
 }
 
 fn print_human_report(report: &DoctorReport) {
-    println!("{COLOR_LABEL}doctor{COLOR_RESET} {}", report.context);
+    println!(
+        "{} {}",
+        theme::section("Doctor"),
+        theme::command(&report.context)
+    );
     for item in &report.reports {
         print_report_line(item);
     }
     println!();
     println!(
-        "{COLOR_META}summary:{COLOR_RESET} {COLOR_OK}{}{COLOR_RESET} ok  {COLOR_WARN}{}{COLOR_RESET} warn  {COLOR_FAIL}{}{COLOR_RESET} fail",
-        report.ok, report.warn, report.fail
+        "{} {}{}{} ok  {}{}{} warn  {}{}{} fail",
+        theme::muted("summary:"),
+        COLOR_OK,
+        report.ok,
+        theme::RESET,
+        COLOR_WARN,
+        report.warn,
+        theme::RESET,
+        COLOR_FAIL,
+        report.fail,
+        theme::RESET
     );
 }
 
@@ -82,14 +92,18 @@ fn print_report_line(report: &CheckReport) {
         CheckStatus::Fail => ("FAIL", COLOR_FAIL),
     };
     println!(
-        "{status_color}{:>4}{COLOR_RESET}  {COLOR_LABEL}{}{COLOR_RESET}  {}",
+        "{status_color}{:>4}{}  {}  {}",
         status_label,
-        display_name(report.name),
+        theme::RESET,
+        theme::command(display_name(report.name)),
         report.detail,
     );
     if !report.fixes_applied.is_empty() {
         println!(
-            "      {COLOR_FIX}fix:{COLOR_RESET} {}",
+            "      {}{}fix:{} {}",
+            theme::GREEN,
+            theme::BOLD,
+            theme::RESET,
             report.fixes_applied.join(", ")
         );
     }

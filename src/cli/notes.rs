@@ -3,6 +3,7 @@ use clap::Args;
 
 use crate::artifact::notes_path;
 use crate::cli::scope::{resolve_context_name, ContextSelectArgs};
+use crate::cli::theme;
 
 #[derive(Debug, Args)]
 #[command(about = "Open the current context's notes directory")]
@@ -18,6 +19,9 @@ pub async fn run(args: NotesArgs) -> Result<()> {
     std::fs::create_dir_all(&dir)
         .with_context(|| format!("create notes directory {}", dir.display()))?;
     open::that(&dir).with_context(|| format!("open notes directory {}", dir.display()))?;
-    println!("{}", dir.display());
+    println!(
+        "{}",
+        theme::success_detail("opened notes", context, dir.display())
+    );
     Ok(())
 }

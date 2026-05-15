@@ -1,6 +1,8 @@
 use anyhow::Result;
 use clap::Args;
 
+use crate::cli::theme;
+
 #[derive(Debug, Args)]
 #[command(about = "Create a new local context")]
 pub struct InitArgs {
@@ -18,6 +20,6 @@ pub async fn run(args: InitArgs) -> Result<()> {
     let _ = args.yes;
     let name = args.name.unwrap_or(crate::artifact::infer_context_name()?);
     let status = crate::init_context_with_description(&name, args.description.as_deref()).await?;
-    println!("initialized {}", status.name);
+    println!("{}", theme::success("initialized", status.name));
     Ok(())
 }

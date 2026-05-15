@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 use crate::cli::progress::CliSpinner;
 use crate::cli::scope::{resolve_context_name, ContextSelectArgs};
+use crate::cli::theme;
 use crate::ensure_context_for_add;
 use crate::extraction::classifier::ContentLayer;
 use crate::index_job::{self, BackgroundJobLaunch, IndexJobKind};
@@ -65,10 +66,20 @@ pub async fn run(args: AddArgs) -> Result<()> {
     let est = index_plan::estimate_seconds(&plan);
 
     if args.dry_run {
-        eprintln!("{}", index_plan::describe_plan_line(&plan));
         eprintln!(
-            "estimate: {} (rough; model and network dependent)",
-            index_plan::format_duration_humans(est)
+            "{} {}",
+            theme::section("Plan"),
+            index_plan::describe_plan_line(&plan)
+        );
+        eprintln!(
+            "{}",
+            theme::key_value(
+                "estimate",
+                format!(
+                    "{} (rough; model and network dependent)",
+                    index_plan::format_duration_humans(est)
+                )
+            )
         );
         return Ok(());
     }
@@ -89,7 +100,7 @@ pub async fn run(args: AddArgs) -> Result<()> {
                 bail!("could not read {}", abs.display());
             }
         }
-        spinner.success("nothing to index");
+        spinner.success(theme::headline("index current", &context));
         return Ok(());
     }
 
@@ -99,8 +110,14 @@ pub async fn run(args: AddArgs) -> Result<()> {
 }
 
 fn background_job_message(action: &str, context: &str, job: &BackgroundJobLaunch) -> String {
-    format!(
-        "background indexing {action} for {context} (job {}, pid {}); check `ctx status`",
-        job.job_id, job.pid
+    theme::headline_detail(
+        format!("indexing {action}"),
+        context,
+        format!(
+            "job {} · pid {} · progress {}",
+            job.job_id,
+            job.pid,
+            theme::command("ctx status")
+        ),
     )
 }

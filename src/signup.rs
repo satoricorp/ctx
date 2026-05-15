@@ -5,6 +5,7 @@ use serde::Serialize;
 use std::io::{self, IsTerminal, Write};
 use std::time::Duration;
 
+use crate::cli::theme;
 use crate::install::{load_config, save_config, Config, SignupConfig};
 
 const DEFAULT_INGEST_URL: &str = "https://satori-collect-emails.vercel.app/v1/ingest";
@@ -13,9 +14,6 @@ const ENV_INGEST_URL: &str = "CTX_SIGNUP_INGEST_URL";
 const ENV_API_KEY: &str = "CTX_SIGNUP_API_KEY";
 const ENV_DISABLE_PROMPT: &str = "CTX_DISABLE_SIGNUP_PROMPT";
 const BUNDLED_INGEST_API_KEY: &str = "satori-eng-co-random-token-808";
-const MUTED: &str = "\x1b[2m";
-const RESET: &str = "\x1b[0m";
-const HIGHLIGHT: &str = "\x1b[1;36m";
 
 #[derive(Debug, Serialize)]
 struct SignupPayload<'a> {
@@ -149,7 +147,10 @@ fn maybe_submit_pending_signup(
 
     if let Err(error) = submit_signup(name, email, &api_key) {
         if verbose {
-            eprintln!("ctx: signup submission failed: {error}");
+            eprintln!(
+                "{}",
+                theme::warn(format!("signup submission failed: {error}"))
+            );
         }
         return Ok(());
     }
@@ -202,8 +203,13 @@ fn submit_signup_with_client(
 }
 
 fn collect_signup_input() -> Result<Option<SignupInput>> {
-    println!("Add your name and email to CTX");
-    println!("{MUTED}Type skip in Name to opt out.{RESET}");
+    println!("{}", theme::section("Join the ctx early list"));
+    println!(
+        "{}",
+        theme::muted(
+            "Name + email helps us follow up with product updates. Type skip in Name to opt out."
+        )
+    );
     println!();
 
     let name = prompt_signup_line("Name").context("prompt for signup name")?;
@@ -218,7 +224,7 @@ fn collect_signup_input() -> Result<Option<SignupInput>> {
 }
 
 fn prompt_signup_line(label: &str) -> Result<String> {
-    print!("{HIGHLIGHT}{label}{RESET}: ");
+    print!("{}: ", theme::command(label));
     io::stdout().flush().context("flush signup prompt")?;
     read_input_line()
 }

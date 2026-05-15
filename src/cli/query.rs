@@ -5,13 +5,9 @@ use std::collections::BTreeSet;
 
 use crate::cli::progress::CliSpinner;
 use crate::cli::scope::{resolve_context_name, ContextSelectArgs};
+use crate::cli::theme;
 use crate::extraction::json::normalize_llm_json_text;
 use crate::retrieval::query::{QueryResult, QueryType};
-
-const COLOR_RESET: &str = "\x1b[0m";
-const COLOR_HEADER: &str = "\x1b[33;1m";
-const COLOR_SOURCE_BULLET: &str = "\x1b[32m";
-const COLOR_SOURCE_TEXT: &str = "\x1b[36m";
 
 #[derive(Debug, Args)]
 #[command(
@@ -45,8 +41,11 @@ pub async fn run(args: QueryArgs) -> Result<()> {
     if results.is_empty() {
         let status = crate::context_status(&context)?;
         eprintln!(
-            "no results for context {:?} (chunks {}, procedures {})",
-            context, status.counts.chunk_count, status.counts.procedure_count
+            "{}",
+            theme::warn(format!(
+                "no results for context {:?} (chunks {}, procedures {})",
+                context, status.counts.chunk_count, status.counts.procedure_count
+            ))
         );
         return Ok(());
     }
@@ -65,9 +64,9 @@ pub async fn run(args: QueryArgs) -> Result<()> {
     println!("{}", rendered.answer);
     if !rendered.attributions.is_empty() {
         println!();
-        println!("{COLOR_HEADER}Sources:{COLOR_RESET}");
+        println!("{}", theme::section("Sources"));
         for source in rendered.attributions {
-            println!("{COLOR_SOURCE_BULLET}- {COLOR_SOURCE_TEXT}{source}{COLOR_RESET}");
+            println!("{}", theme::bullet(source));
         }
     }
 
@@ -109,7 +108,12 @@ async fn synthesize_answer(
 
 fn print_raw_results(results: &[QueryResult]) {
     for result in results {
-        println!("{} {:.3} {}", result.kind, result.score, result.source);
+        println!(
+            "{} {} {}",
+            theme::section(&result.kind),
+            theme::muted(format!("{:.3}", result.score)),
+            theme::command(&result.source)
+        );
         println!("{}", result.summary);
         println!("{}", result.content);
         println!();

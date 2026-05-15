@@ -3,6 +3,7 @@ use clap::Args;
 
 use crate::cli::index_prompt::{self, IndexRunChoice};
 use crate::cli::scope::{resolve_context_name, ContextSelectArgs};
+use crate::cli::theme;
 use crate::index_job::{self, IndexJobKind};
 use crate::index_plan;
 use crate::{open_existing_context, update_context_with_verbosity};
@@ -44,7 +45,10 @@ pub async fn run(args: UpdateArgs) -> Result<()> {
         .map(index_job::job_is_resumable)
         .unwrap_or(false)
     {
-        eprintln!("note: interrupted index job pending; omit --dry-run to resume it first");
+        eprintln!(
+            "{}",
+            theme::warn("interrupted index job pending; omit --dry-run to resume it first")
+        );
     }
 
     let manifest = crate::artifact::Manifest::load(&ctx_path)?;
@@ -55,10 +59,20 @@ pub async fn run(args: UpdateArgs) -> Result<()> {
     let non_interactive = args.yes || args.no_interactive;
 
     if args.dry_run {
-        eprintln!("{}", index_plan::describe_plan_line(&plan));
         eprintln!(
-            "estimate: {} (rough; model and network dependent)",
-            index_plan::format_duration_humans(est)
+            "{} {}",
+            theme::section("Plan"),
+            index_plan::describe_plan_line(&plan)
+        );
+        eprintln!(
+            "{}",
+            theme::key_value(
+                "estimate",
+                format!(
+                    "{} (rough; model and network dependent)",
+                    index_plan::format_duration_humans(est)
+                )
+            )
         );
         return Ok(());
     }
@@ -71,19 +85,18 @@ pub async fn run(args: UpdateArgs) -> Result<()> {
             if plan.is_empty() {
                 let status = crate::finalize_update_context(&context, &ctx_path).await?;
                 println!(
-                    "updated {} (index already current; notes refreshed)",
-                    status.name
+                    "{}",
+                    theme::success_detail(
+                        "updated",
+                        status.name,
+                        "index already current · notes refreshed"
+                    )
                 );
                 return Ok(());
             }
             let job =
                 index_job::start_background_index_job(&context, &plan, IndexJobKind::Update, true)?;
-            println!(
-                "background indexing started (job {}, pid {})",
-                job.job_id, job.pid
-            );
-            println!("log: {}", job.log_path.display());
-            println!("progress: ctx status");
+            print_background_job(&job);
             return Ok(());
         }
     }
@@ -98,7 +111,7 @@ pub async fn run(args: UpdateArgs) -> Result<()> {
 
     match choice {
         IndexRunChoice::Cancel => {
-            eprintln!("cancelled");
+            eprintln!("{}", theme::muted("cancelled"));
             Ok(())
         }
         IndexRunChoice::Background => {
@@ -116,19 +129,14 @@ pub async fn run(args: UpdateArgs) -> Result<()> {
                     IndexJobKind::Update,
                     true,
                 )?;
-                println!(
-                    "background indexing started (job {}, pid {})",
-                    job.job_id, job.pid
-                );
-                println!("log: {}", job.log_path.display());
-                println!("progress: ctx status");
+                print_background_job(&job);
                 Ok(())
             }
         }
         IndexRunChoice::Sync => {
             if plan.is_empty() {
                 let status = update_context_with_verbosity(&context, args.verbose).await?;
-                println!("updated {}", status.name);
+                println!("{}", theme::success("updated", status.name));
                 return Ok(());
             }
             let out = index_job::run_sync_with_progress(
@@ -143,8 +151,25 @@ pub async fn run(args: UpdateArgs) -> Result<()> {
                 .context_status
                 .map(|s| s.name)
                 .unwrap_or_else(|| context.clone());
-            println!("updated {}", name);
+            println!("{}", theme::success("updated", name));
             Ok(())
         }
     }
+}
+
+#[cfg(unix)]
+fn print_background_job(job: &index_job::BackgroundJobLaunch) {
+    println!(
+        "{}",
+        theme::success_detail(
+            "indexing started",
+            "background",
+            format!("job {} · pid {}", job.job_id, job.pid)
+        )
+    );
+    println!("{}", theme::key_value("log", job.log_path.display()));
+    println!(
+        "{}",
+        theme::key_value("progress", theme::command("ctx status"))
+    );
 }
