@@ -11,6 +11,7 @@ pub mod remember;
 pub mod run_index_job;
 pub mod scope;
 pub mod status;
+pub mod theme;
 pub mod update;
 pub mod use_context;
 
@@ -26,14 +27,13 @@ const CLI_STYLES: Styles = Styles::styled()
     .literal(AnsiColor::Cyan.on_default().bold())
     .placeholder(AnsiColor::Green.on_default());
 
-const CTX_BANNER: &str = "\x1b[1;36m ██████╗████████╗██╗  ██╗\n██╔════╝╚══██╔══╝╚██╗██╔╝\n██║        ██║    ╚███╔╝\n██║        ██║    ██╔██╗\n╚██████╗   ██║   ██╔╝ ██╗\n ╚═════╝   ╚═╝   ╚═╝  ╚═╝\x1b[0m\n\x1b[37mlocal-first context runtime for agents\x1b[0m";
 const CLI_HELP_TEMPLATE: &str = "{before-help}\n{usage-heading} {usage}\n\n{all-args}";
 
 #[derive(Debug, Parser)]
 #[command(name = "ctx")]
 #[command(about = "local-first context runtime for agents")]
 #[command(disable_version_flag = true)]
-#[command(before_help = CTX_BANNER)]
+#[command(before_help = theme::CTX_BANNER)]
 #[command(help_template = CLI_HELP_TEMPLATE)]
 #[command(styles = CLI_STYLES)]
 pub struct Cli {
@@ -53,11 +53,11 @@ pub struct Cli {
 enum Commands {
     /// Create a new local context.
     Init(init::InitArgs),
-    /// Queue a background indexing job for a file or directory.
+    /// Ingest a file or directory into a context.
     Add(add::AddArgs),
-    /// Write durable text memory into context notes.
+    /// Save durable text memory into notes.
     Remember(remember::RememberArgs),
-    /// Search indexed content and synthesize an answer.
+    /// Ask a context and get a cited answer.
     Query(query::QueryArgs),
     /// Re-index changed files and refresh notes.
     Update(update::UpdateArgs),
@@ -82,7 +82,7 @@ pub async fn run() -> Result<()> {
     let cli = Cli::parse();
 
     if cli.version {
-        println!("ctx {}", env!("CARGO_PKG_VERSION"));
+        println!("{}", theme::success("ctx", env!("CARGO_PKG_VERSION")));
         return Ok(());
     }
 

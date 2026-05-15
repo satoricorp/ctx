@@ -4,6 +4,7 @@ use clap::Args;
 use std::io::{self, Read};
 
 use crate::cli::scope::{resolve_context_name, ContextSelectArgs};
+use crate::cli::theme;
 use crate::NotesWriteMode;
 
 #[derive(Debug, Args)]
@@ -33,7 +34,10 @@ pub async fn run(args: RememberArgs) -> Result<()> {
     let path = format!("notes/topics/{topic}.md");
 
     let outcome = crate::write_notes_file(&context, &path, &entry, NotesWriteMode::Append)?;
-    println!("remembered in {context}: {}", outcome.path);
+    println!(
+        "{}",
+        theme::success_detail("remembered", context, outcome.path)
+    );
     Ok(())
 }
 

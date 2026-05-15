@@ -1,6 +1,8 @@
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use std::time::Duration;
 
+use crate::cli::theme;
+
 pub struct CliSpinner {
     bar: ProgressBar,
     finished: bool,
@@ -13,7 +15,7 @@ impl CliSpinner {
         bar.set_style(
             ProgressStyle::with_template("{spinner} {msg}")
                 .expect("valid spinner template")
-                .tick_strings(&["-", "\\", "|", "/"]),
+                .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]),
         );
         bar.enable_steady_tick(Duration::from_millis(80));
         bar.set_message(message.into());
@@ -25,8 +27,12 @@ impl CliSpinner {
 
     pub fn success(mut self, message: impl Into<String>) {
         self.finished = true;
-        self.bar
-            .finish_with_message(format!("\x1b[32m●\x1b[0m {}", message.into()));
+        self.bar.finish_with_message(format!(
+            "{}●{} {}",
+            theme::GREEN_BOLD,
+            theme::RESET,
+            message.into()
+        ));
     }
 
     pub fn clear(mut self) {
