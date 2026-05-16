@@ -1,0 +1,46 @@
+"use client";
+
+import { GeistMono } from "geist/font/mono";
+import { Check, Copy } from "lucide-react";
+import { useCallback, useState } from "react";
+
+const INSTALL_CMD = "brew tap satoricorp/tap && brew install satoricorp/tap/ctx";
+
+export function InstallCommand() {
+  const [copied, setCopied] = useState(false);
+
+  const copy = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(INSTALL_CMD);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 2000);
+    } catch {
+      setCopied(false);
+    }
+  }, []);
+
+  return (
+    <div
+      className={`${GeistMono.className} bg-foreground/[0.04] text-foreground dark:bg-white/[0.06] flex w-full max-w-2xl items-center gap-3 rounded-xl border px-4 py-3`}
+    >
+      <code className="min-w-0 flex-1 overflow-x-auto text-xs whitespace-pre md:text-sm">
+        {INSTALL_CMD}
+      </code>
+      <button
+        type="button"
+        onClick={copy}
+        aria-label={copied ? "Copied" : "Copy install command"}
+        className="bg-background text-foreground hover:bg-muted shrink-0 rounded-lg border p-2 transition"
+        style={{
+          color: copied ? "var(--accent-highlight)" : undefined,
+        }}
+      >
+        {copied ? (
+          <Check className="size-4" aria-hidden />
+        ) : (
+          <Copy className="size-4" aria-hidden />
+        )}
+      </button>
+    </div>
+  );
+}
